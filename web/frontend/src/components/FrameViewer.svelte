@@ -32,6 +32,60 @@
 	let error = $state(false);
 	let mode = $state<'frame' | 'video' | 'compare'>('frame');
 	let compareMode = $state<'split' | 'wipe'>('split');
+	let bgMode = $state<'checker' | 'black' | 'white' | 'green'>('checker');
+	let showHistogram = $state(false);
+	let histCanvas: HTMLCanvasElement | undefined = $state();
+
+	function drawHistogram(imgEl: HTMLImageElement) {
+		if (!histCanvas || !showHistogram) return;
+		const ctx = histCanvas.getContext('2d');
+		if (!ctx) return;
+
+		const w = 256, h = 80;
+		histCanvas.width = w;
+		histCanvas.height = h;
+
+		// Sample the image
+		const tmp = document.createElement('canvas');
+		tmp.width = imgEl.naturalWidth;
+		tmp.height = imgEl.naturalHeight;
+		const tctx = tmp.getContext('2d');
+		if (!tctx) return;
+		tctx.drawImage(imgEl, 0, 0);
+		const data = tctx.getImageData(0, 0, tmp.width, tmp.height).data;
+
+		const rHist = new Uint32Array(256);
+		const gHist = new Uint32Array(256);
+		const bHist = new Uint32Array(256);
+
+		for (let i = 0; i < data.length; i += 16) { // sample every 4th pixel
+			rHist[data[i]]++;
+			gHist[data[i + 1]]++;
+			bHist[data[i + 2]]++;
+		}
+
+		const maxVal = Math.max(...rHist, ...gHist, ...bHist) || 1;
+
+		ctx.clearRect(0, 0, w, h);
+		ctx.globalAlpha = 0.5;
+
+		for (let i = 0; i < 256; i++) {
+			ctx.fillStyle = '#ff4444';
+			ctx.fillRect(i, h - (rHist[i] / maxVal) * h, 1, (rHist[i] / maxVal) * h);
+			ctx.fillStyle = '#44ff44';
+			ctx.fillRect(i, h - (gHist[i] / maxVal) * h, 1, (gHist[i] / maxVal) * h);
+			ctx.fillStyle = '#4488ff';
+			ctx.fillRect(i, h - (bHist[i] / maxVal) * h, 1, (bHist[i] / maxVal) * h);
+		}
+	}
+
+	function onImgLoadWithHist(e: Event) {
+		loading = false;
+		error = false;
+		if (showHistogram && e.target instanceof HTMLImageElement) {
+			drawHistogram(e.target);
+		}
+	}
 	let playbackFps = $state(24);
 	let comparePass = $state('input');
 
@@ -132,7 +186,13 @@
 		processed: 'Processed',
 	};
 
-	function onImgLoad() { loading = false; error = false; }
+	function onImgLoad(e: Event) {
+		loading = false;
+		error = false;
+		if (showHistogram && e.target instanceof HTMLImageElement) {
+			drawHistogram(e.target);
+		}
+	}
 	function onImgError() { loading = false; error = true; }
 
 	function onFrameChange(e: Event) {
@@ -229,6 +289,15 @@
 			case '+': case '=': e.preventDefault(); zoom = Math.min(10, zoom * 1.2); break;
 			case '-': e.preventDefault(); zoom = Math.max(1, zoom * 0.8); if (zoom <= 1.05) { panX = 0; panY = 0; } break;
 			case '0': e.preventDefault(); resetZoom(); break;
+			case '1': e.preventDefault(); zoom = 1; panX = 0; panY = 0; break;
+			case '2': e.preventDefault(); zoom = 2; break;
+			case '4': e.preventDefault(); zoom = 4; break;
+			case 'w': e.preventDefault(); if (mode === 'compare') compareMode = compareMode === 'wipe' ? 'split' : 'wipe'; break;
+			case 'b': e.preventDefault(); {
+				const modes: typeof bgMode[] = ['checker', 'black', 'white', 'green'];
+				bgMode = modes[(modes.indexOf(bgMode) + 1) % modes.length];
+			} break;
+			case 'h': e.preventDefault(); showHistogram = !showHistogram; break;
 		}
 	}
 </script>
@@ -248,7 +317,7 @@
 		onpointermove={onPanMove}
 		onpointerup={onPanEnd}
 		ondblclick={resetZoom}
-		style="--zoom-transform: {viewportTransform}"
+		style="--zoom-transform: {viewportTransform}; --bg: {bgMode === 'black' ? '#000' : bgMode === 'white' ? '#fff' : bgMode === 'green' ? '#00b140' : ''}"
 	>
 		{#if mode === 'compare' && compareMode === 'split'}
 			<div class="compare-side">
@@ -359,6 +428,9 @@
 				{Math.round(zoom * 100)}%
 			</button>
 		{/if}
+		{#if showHistogram}
+			<canvas bind:this={histCanvas} class="histogram-overlay"></canvas>
+		{/if}
 	</div>
 
 	<div class="viewer-controls">
@@ -408,6 +480,17 @@
 						{passLabels[selectedPass] ?? selectedPass}
 					</a>
 				{/if}
+				<div class="mode-toggle">
+					<button class="mode-btn mono" class:active={zoom >= 0.95 && zoom <= 1.05} onclick={() => { zoom = 1; panX = 0; panY = 0; }} title="100% (1)">1x</button>
+					<button class="mode-btn mono" class:active={zoom >= 1.95 && zoom <= 2.05} onclick={() => { zoom = 2; }} title="200% (2)">2x</button>
+					<button class="mode-btn mono" class:active={zoom >= 3.95 && zoom <= 4.05} onclick={() => { zoom = 4; }} title="400% (4)">4x</button>
+				</div>
+				<button class="mode-btn mono bg-toggle" onclick={() => { const modes = ['checker', 'black', 'white', 'green']; bgMode = modes[(modes.indexOf(bgMode) + 1) % modes.length]; }} title="Background ({bgMode}) (B)">
+					{#if bgMode === 'checker'}BG ▦{:else if bgMode === 'black'}BG ■{:else if bgMode === 'white'}BG □{:else}BG ●{/if}
+				</button>
+				<button class="mode-btn mono bg-toggle" class:active={showHistogram} onclick={() => { showHistogram = !showHistogram; }} title="Histogram (H)">
+					RGB
+				</button>
 			</div>
 		</div>
 
@@ -481,8 +564,7 @@
 	.viewer-viewport {
 		position: relative;
 		aspect-ratio: 16 / 9;
-		background:
-			repeating-conic-gradient(var(--surface-3) 0% 25%, var(--surface-2) 0% 50%) 0 0 / 16px 16px;
+		background: var(--bg, repeating-conic-gradient(var(--surface-3) 0% 25%, var(--surface-2) 0% 50%) 0 0 / 16px 16px);
 		overflow: hidden;
 	}
 
@@ -663,6 +745,18 @@
 		animation: spin 0.6s linear infinite;
 	}
 
+	.histogram-overlay {
+		position: absolute;
+		bottom: 28px;
+		left: var(--sp-2);
+		width: 256px;
+		height: 80px;
+		background: rgba(0, 0, 0, 0.7);
+		border-radius: var(--radius-sm);
+		pointer-events: none;
+		z-index: 5;
+	}
+
 	.zoom-badge {
 		position: absolute;
 		top: var(--sp-2);
@@ -777,6 +871,11 @@
 		border-radius: var(--radius-sm);
 		color: var(--text-secondary);
 		transition: all 0.1s;
+	}
+
+	.bg-toggle {
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
 	}
 
 	.dl-btn:hover { color: var(--accent); border-color: var(--accent); }
