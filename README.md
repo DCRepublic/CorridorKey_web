@@ -154,9 +154,41 @@ CorridorKey supports distributed GPU processing across multiple machines on your
 - Jobs show which node processed them in the Jobs panel
 - The Nodes page (`/nodes`) shows all machines, per-GPU status, and real-time VRAM
 
-**Quick start — from source:**
+#### Quick start — Docker (recommended)
 
-On the main machine, start the WebUI as normal. On each remote machine with an NVIDIA GPU:
+**Option 1: Docker run (one line, no checkout needed):**
+```bash
+docker run --gpus all \
+  -e CK_MAIN_URL=http://<main-machine-ip>:3000 \
+  -e CK_NODE_NAME=my-node \
+  ghcr.io/jamesnyevrguy/corridorkey-node:0.4.0
+```
+
+**Option 2: Docker Compose:**
+
+Pre-built compose files are in `deploy/`. Copy `.env.example` to `.env` and edit:
+
+```bash
+cd deploy
+cp .env.example .env
+# Edit .env — set CK_MAIN_URL, CK_NODE_NAME, etc.
+```
+
+Web server:
+```bash
+docker compose -f docker-compose.web.yml up -d
+```
+
+Node agent:
+```bash
+docker compose -f docker-compose.node.yml up -d
+```
+
+These work with **Docker Desktop** too — open the `deploy/` folder in Docker Desktop, edit the `.env` file, and click Start. No terminal required.
+
+**Option 3: From source (no Docker):**
+
+On each remote machine with an NVIDIA GPU:
 ```bash
 git clone https://github.com/nikopueringer/CorridorKey.git
 cd CorridorKey
@@ -166,22 +198,67 @@ CK_MAIN_URL=http://<main-machine-ip>:3000 CK_NODE_NAME=my-node uv run python -m 
 
 Model weights auto-download from the main server on first start — no manual copying needed.
 
-**Quick start — Docker (no repo checkout needed):**
-```bash
-docker run --gpus all \
-  -e CK_MAIN_URL=http://<main-machine-ip>:3000 \
-  -e CK_NODE_NAME=my-node \
-  ghcr.io/jamesnyevrguy/corridorkey-node
+#### Shared network drive (optional, recommended)
+
+If both machines mount the same NAS/network share, file transfer is skipped entirely — the node reads and writes directly to the shared directory.
+
+Web server compose:
+```yaml
+services:
+  corridorkey-web:
+    image: ghcr.io/jamesnyevrguy/corridorkey-web:0.4.1
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "3000:3000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - OPENCV_IO_ENABLE_OPENEXR=1
+      - CK_CLIPS_DIR=/app/Projects
+    volumes:
+      - /mnt/nas/CorridorKey:/app/Projects
+      - ./weights/corridorkey:/app/CorridorKeyModule/checkpoints
+      - ./weights/gvm:/app/gvm_core/weights
+      - ./weights/videomama:/app/VideoMaMaInferenceModule/checkpoints/VideoMaMa
 ```
 
-**Quick start — Docker Compose:**
-
-Copy `deploy/.env.example` to `deploy/.env`, set `CK_MAIN_URL`, then:
-```bash
-docker compose -f deploy/docker-compose.node.yml up -d
+Node agent compose:
+```yaml
+services:
+  corridorkey-node:
+    image: ghcr.io/jamesnyevrguy/corridorkey-node:0.4.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - CK_MAIN_URL=http://<server-ip>:3000
+      - CK_NODE_NAME=render-node-1
+      - CK_SHARED_STORAGE=/app/Projects
+    volumes:
+      - /mnt/nas/CorridorKey:/app/Projects
 ```
 
-**Node configuration (environment variables):**
+Both mount the same NAS path. Without a shared drive, the node transfers files over HTTP — works on any LAN, just slower for large sequences.
+
+#### Job Sharding
+
+Inference jobs can be automatically split across all available GPUs and nodes. Enable **"Auto-shard inference across GPUs"** in the Settings page. A 500-frame clip with 3 GPUs processes ~167 frames on each simultaneously.
+
+- Shards show combined progress in the Jobs page with per-GPU detail
+- Cancel all shards at once, retry only failed shards
+- Multi-GPU on a single machine works via process-per-GPU isolation
+- Minimum shard size (50 frames) prevents overhead on short clips
+
+#### Node configuration (environment variables)
 
 | Variable | Default | Description |
 |---|---|---|
@@ -191,8 +268,12 @@ docker compose -f deploy/docker-compose.node.yml up -d
 | `CK_SHARED_STORAGE` | *(empty)* | Path if node mounts the same Projects directory. Skips HTTP file transfer. |
 | `CK_POLL_INTERVAL` | `2` | Seconds between job polls |
 | `CK_HEARTBEAT_INTERVAL` | `10` | Seconds between heartbeats |
+| `CK_AUTH_TOKEN` | *(empty)* | Shared secret for node authentication. Set same value on server and nodes. |
+| `CK_NODE_PREWARM` | `true` | Pre-load model into VRAM on startup to avoid cold-start delay. |
+| `CK_NODE_ACCEPTED_TYPES` | *(empty)* | Comma-separated job types to accept. Empty = all. |
 
-**Render Farm features:**
+#### Render Farm features
+
 - **Local GPU toggle** — disable local GPU processing so jobs only go to remote nodes (useful when the main machine's GPU is busy with other work)
 - **GPU in-use detection** — nodes check GPU utilization before accepting jobs; if another process (Unreal, Nuke, etc.) is using >50% GPU, the node waits
 - **Per-node scheduling** — set active hours from the Nodes UI (e.g. 20:00–08:00 for overnight rendering)
@@ -200,8 +281,12 @@ docker compose -f deploy/docker-compose.node.yml up -d
 - **Multi-GPU** — nodes with multiple GPUs can process jobs in parallel via process-per-GPU isolation
 - **Shared storage** — if both machines mount the same Projects directory, file transfer is skipped entirely (zero overhead)
 - **Auto weight sync** — nodes download missing model weights from the main server over LAN on startup
+- **Job priority** — reorder queued jobs, higher priority jobs process first
+- **Shard groups** — grouped progress display, cancel-all, retry-failed for sharded jobs
+- **Node logs** — view remote node log output from the Nodes page
+- **CPU/RAM monitoring** — real-time stats for local and remote machines
 
-**Requirements:** Remote nodes need an NVIDIA GPU with CUDA support. AMD GPUs are not supported (CorridorKey requires CUDA). WSL2 works if the Windows host has recent NVIDIA drivers (2021+).
+**Requirements:** Remote nodes need an NVIDIA GPU with CUDA support. AMD GPUs are not supported (CorridorKey requires CUDA). WSL2 works if the Windows host has recent NVIDIA drivers (2021+). Docker Desktop works on all platforms.
 
 ### Docker CLI (Linux + NVIDIA GPU)
 
