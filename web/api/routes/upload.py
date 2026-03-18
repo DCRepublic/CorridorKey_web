@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import zipfile
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
 from backend.job_queue import GPUJob, JobType
 from backend.project import (
@@ -21,9 +21,10 @@ from backend.project import (
 from ..deps import get_queue, get_service
 from ..path_security import safe_extract_zip
 from ..routes import clips as _clips_mod
+from ..tier_guard import require_member
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/upload", tags=["upload"])
+router = APIRouter(prefix="/api/upload", tags=["upload"], dependencies=[Depends(require_member)])
 
 # Max upload size in bytes. Default 10 GB. Set CK_MAX_UPLOAD_MB to override.
 _MAX_UPLOAD_BYTES = int(os.environ.get("CK_MAX_UPLOAD_MB", "10240")) * 1024 * 1024

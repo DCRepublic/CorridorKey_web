@@ -6,13 +6,14 @@ import logging
 import os
 import shutil
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from ..deps import get_service
 from ..schemas import ClipAssetSchema, ClipListResponse, ClipSchema
+from ..tier_guard import require_member
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/clips", tags=["clips"])
+router = APIRouter(prefix="/api/clips", tags=["clips"], dependencies=[Depends(require_member)])
 
 # Resolved at startup via app.state.clips_dir
 _clips_dir: str = ""

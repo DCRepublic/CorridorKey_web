@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.job_queue import GPUJob, JobType
@@ -22,8 +22,9 @@ from ..schemas import (
     PipelineJobRequest,
     VideoMaMaJobRequest,
 )
+from ..tier_guard import require_member
 
-router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_member)])
 
 
 def _job_to_schema(job: GPUJob) -> JobSchema:

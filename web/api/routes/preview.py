@@ -12,7 +12,7 @@ import zipfile
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, Response
 
 from backend.frame_io import read_image_frame
@@ -20,9 +20,10 @@ from backend.natural_sort import natsorted
 from backend.project import is_image_file
 
 from ..deps import get_service
+from ..tier_guard import require_member
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/preview", tags=["preview"])
+router = APIRouter(prefix="/api/preview", tags=["preview"], dependencies=[Depends(require_member)])
 
 _clips_dir: str = ""
 # Cache dir for stitched preview videos

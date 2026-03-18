@@ -8,14 +8,15 @@ import subprocess
 import sys
 import threading
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
 from ..deps import get_service
 from ..schemas import DeviceResponse, VRAMResponse
+from ..tier_guard import require_admin, require_member
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/system", tags=["system"])
+router = APIRouter(prefix="/api/system", tags=["system"], dependencies=[Depends(require_member)])
 
 # Base dir for weight paths
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -152,7 +153,7 @@ def get_vram_limit_setting():
     return {"vram_limit_gb": get_vram_limit()}
 
 
-@router.post("/vram-limit")
+@router.post("/vram-limit", dependencies=[Depends(require_admin)])
 def set_vram_limit_setting(vram_limit_gb: float):
     from ..worker import set_vram_limit
 
@@ -167,7 +168,7 @@ def get_local_gpu_setting():
     return {"enabled": get_local_gpu_enabled()}
 
 
-@router.post("/local-gpu")
+@router.post("/local-gpu", dependencies=[Depends(require_admin)])
 def set_local_gpu_setting(enabled: bool):
     from ..worker import set_local_gpu_enabled
 
@@ -182,7 +183,7 @@ def get_claim_delay_setting():
     return {"seconds": get_local_claim_delay()}
 
 
-@router.post("/claim-delay")
+@router.post("/claim-delay", dependencies=[Depends(require_admin)])
 def set_claim_delay_setting(seconds: float):
     from ..worker import set_local_claim_delay
 
@@ -190,7 +191,7 @@ def set_claim_delay_setting(seconds: float):
     return {"status": "ok", "seconds": seconds}
 
 
-@router.post("/unload")
+@router.post("/unload", dependencies=[Depends(require_admin)])
 def unload_engines():
     service = get_service()
     service.unload_engines()
@@ -317,7 +318,7 @@ def _hf_bin() -> str:
     return "huggingface-cli"
 
 
-@router.post("/weights/download/{name}")
+@router.post("/weights/download/{name}", dependencies=[Depends(require_admin)])
 def download_weights(name: str):
     """Start downloading weights for a model. Runs in the background."""
     with _download_lock:

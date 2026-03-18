@@ -7,7 +7,7 @@ import os
 import shutil
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.clip_state import scan_project_clips
@@ -20,10 +20,11 @@ from backend.project import (
     write_project_json,
 )
 
+from ..tier_guard import require_member
 from .clips import _clip_to_schema, _clips_dir
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/projects", tags=["projects"])
+router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depends(require_member)])
 
 
 class ProjectSchema(BaseModel):
