@@ -12,9 +12,11 @@
 	import KeyboardHelp from '../components/KeyboardHelp.svelte';
 	import { toast } from '$lib/stores/toasts';
 	import { goto } from '$app/navigation';
+	import { logout, getStoredUser } from '$lib/auth';
 
 	let { children } = $props();
 	let authChecked = $state(false);
+	let authEnabled = $state(false);
 
 	let connected = $state(false);
 
@@ -36,6 +38,12 @@
 	}
 
 	const publicPaths = ['/login', '/signup', '/pending'];
+	let isPublicPage = $derived(publicPaths.some((p) => page.url.pathname.startsWith(p)));
+
+	function handleLogout() {
+		logout();
+		goto('/login');
+	}
 
 	onMount(async () => {
 		// Check if auth is enabled and redirect to login if needed
@@ -43,11 +51,12 @@
 		if (!publicPaths.some((p) => currentPath.startsWith(p))) {
 			try {
 				const status = await fetch('/api/auth/status').then((r) => r.json());
+				authEnabled = status.auth_enabled;
 				if (status.auth_enabled) {
-					// Check if we have a stored token
 					const token = localStorage.getItem('ck:auth_token');
 					if (!token) {
 						goto('/login');
+						authChecked = true;
 						return;
 					}
 				}
@@ -124,7 +133,9 @@
 	});
 </script>
 
-{#if authChecked}
+{#if isPublicPage}
+	{@render children()}
+{:else if authChecked}
 <div class="shell">
 	<nav class="sidebar">
 		<div class="sidebar-top">
@@ -170,6 +181,13 @@
 				<span class="device-label mono">{$device}</span>
 				<span class="conn-badge mono" class:live={connected}>{connected ? 'LIVE' : 'OFFLINE'}</span>
 			</div>
+			{#if authEnabled}
+				{@const user = getStoredUser()}
+				<div class="user-row">
+					<span class="user-email mono">{user?.email ?? ''}</span>
+					<button class="logout-btn mono" onclick={handleLogout}>LOGOUT</button>
+				</div>
+			{/if}
 		</div>
 	</nav>
 
@@ -194,8 +212,6 @@
 		{@render children()}
 	</main>
 </div>
-{:else}
-	{@render children()}
 {/if}
 
 <ToastContainer />
@@ -437,5 +453,39 @@
 		border-radius: 2px;
 		transition: width 0.3s ease-out;
 		box-shadow: 0 0 6px rgba(255, 242, 3, 0.2);
+	}
+
+	.user-row {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		padding-top: var(--sp-2);
+		border-top: 1px solid var(--border);
+	}
+
+	.user-email {
+		flex: 1;
+		font-size: 10px;
+		color: var(--text-tertiary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.logout-btn {
+		font-size: 9px;
+		letter-spacing: 0.08em;
+		color: var(--text-tertiary);
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		padding: 2px 6px;
+		cursor: pointer;
+		transition: all 0.15s;
+		flex-shrink: 0;
+	}
+	.logout-btn:hover {
+		color: var(--state-error);
+		border-color: var(--state-error);
 	}
 </style>

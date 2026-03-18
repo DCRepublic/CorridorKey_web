@@ -53,7 +53,12 @@
 			await signup(email, password);
 
 			// Mark the invite token as consumed
-			await fetch(`/api/auth/invite/consume?token=${encodeURIComponent(inviteToken)}&email=${encodeURIComponent(email)}`, { method: 'POST' });
+			const consumeRes = await fetch(`/api/auth/invite/consume?token=${encodeURIComponent(inviteToken)}&email=${encodeURIComponent(email)}`, { method: 'POST' });
+			if (!consumeRes.ok) {
+				const data = await consumeRes.json().catch(() => ({ detail: 'Failed to consume invite' }));
+				error = data.detail ?? 'Invite token could not be consumed';
+				return;
+			}
 
 			goto('/pending');
 		} catch (e) {

@@ -1,21 +1,64 @@
 /** Typed fetch wrappers for the CorridorKey API. */
 
+import { getToken, refreshToken, logout } from '$lib/auth';
+
 const BASE = '';
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-
-	// Attach JWT if available (auth may be disabled, in which case no token exists)
-	const token = localStorage.getItem('ck:auth_token');
+/** Attach auth header to a Headers/Record object. */
+async function attachAuth(headers: Record<string, string>): Promise<void> {
+	const token = await getToken();
 	if (token) {
 		headers['Authorization'] = `Bearer ${token}`;
 	}
+}
+
+/** Handle 401: try one token refresh + retry, otherwise redirect to login. */
+async function handle401(method: string, path: string, opts: RequestInit): Promise<Response | null> {
+	const session = await refreshToken();
+	if (!session) {
+		logout();
+		window.location.href = '/login';
+		return null;
+	}
+	// Retry with new token
+	const retryHeaders = { ...(opts.headers as Record<string, string>) };
+	retryHeaders['Authorization'] = `Bearer ${session.access_token}`;
+	return fetch(`${BASE}${path}`, { ...opts, headers: retryHeaders });
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+	await attachAuth(headers);
 
 	const opts: RequestInit = { method, headers };
 	if (body !== undefined) {
 		opts.body = JSON.stringify(body);
 	}
-	const res = await fetch(`${BASE}${path}`, opts);
+	let res = await fetch(`${BASE}${path}`, opts);
+
+	// On 401, try refreshing the token once
+	if (res.status === 401) {
+		const retry = await handle401(method, path, opts);
+		if (!retry) throw new Error('Session expired');
+		res = retry;
+	}
+
+	if (!res.ok) {
+		const detail = await res.json().catch(() => ({ detail: res.statusText }));
+		throw new Error(detail.detail || res.statusText);
+	}
+	return res.json();
+}
+
+async function uploadRequest<T>(path: string, form: FormData): Promise<T> {
+	const headers: Record<string, string> = {};
+	await attachAuth(headers);
+	let res = await fetch(`${BASE}${path}`, { method: 'POST', headers, body: form });
+	if (res.status === 401) {
+		const retry = await handle401('POST', path, { method: 'POST', headers, body: form });
+		if (!retry) throw new Error('Session expired');
+		res = retry;
+	}
 	if (!res.ok) {
 		const detail = await res.json().catch(() => ({ detail: res.statusText }));
 		throw new Error(detail.detail || res.statusText);
@@ -213,43 +256,23 @@ export const api = {
 			const qs = new URLSearchParams();
 			if (name) qs.set('name', name);
 			qs.set('auto_extract', String(autoExtract));
-			const res = await fetch(`${BASE}/api/upload/video?${qs}`, { method: 'POST', body: form });
-			if (!res.ok) {
-				const detail = await res.json().catch(() => ({ detail: res.statusText }));
-				throw new Error(detail.detail || res.statusText);
-			}
-			return res.json();
+			return uploadRequest(`/api/upload/video?${qs}`, form);
 		},
 		frames: async (file: File, name?: string): Promise<{ status: string; clips: Clip[]; frame_count: number }> => {
 			const form = new FormData();
 			form.append('file', file);
 			const params = name ? `?name=${encodeURIComponent(name)}` : '';
-			const res = await fetch(`${BASE}/api/upload/frames${params}`, { method: 'POST', body: form });
-			if (!res.ok) {
-				const detail = await res.json().catch(() => ({ detail: res.statusText }));
-				throw new Error(detail.detail || res.statusText);
-			}
-			return res.json();
+			return uploadRequest(`/api/upload/frames${params}`, form);
 		},
 		mask: async (clipName: string, file: File): Promise<unknown> => {
 			const form = new FormData();
 			form.append('file', file);
-			const res = await fetch(`${BASE}/api/upload/mask/${encodeURIComponent(clipName)}`, { method: 'POST', body: form });
-			if (!res.ok) {
-				const detail = await res.json().catch(() => ({ detail: res.statusText }));
-				throw new Error(detail.detail || res.statusText);
-			}
-			return res.json();
+			return uploadRequest(`/api/upload/mask/${encodeURIComponent(clipName)}`, form);
 		},
 		alpha: async (clipName: string, file: File): Promise<unknown> => {
 			const form = new FormData();
 			form.append('file', file);
-			const res = await fetch(`${BASE}/api/upload/alpha/${encodeURIComponent(clipName)}`, { method: 'POST', body: form });
-			if (!res.ok) {
-				const detail = await res.json().catch(() => ({ detail: res.statusText }));
-				throw new Error(detail.detail || res.statusText);
-			}
-			return res.json();
+			return uploadRequest(`/api/upload/alpha/${encodeURIComponent(clipName)}`, form);
 		}
 	},
 	preview: {

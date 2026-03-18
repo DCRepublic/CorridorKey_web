@@ -90,12 +90,19 @@ def validate_invite_token(token: str):
 
 @router.post("/invite/consume")
 def consume_invite_token(token: str, email: str):
-    """Mark an invite token as used after successful signup."""
+    """Mark an invite token as used after successful signup.
+
+    Re-checks the used flag to narrow the TOCTOU window between
+    validate and consume. The frontend should treat a 409 here
+    as a failed signup and show an error.
+    """
     storage = get_storage()
     invites = storage.get_invite_tokens()
     invite = invites.get(token)
     if not invite:
         raise HTTPException(status_code=404, detail="Invalid invite token")
+    if invite.get("used"):
+        raise HTTPException(status_code=409, detail="Invite token already used")
     invite["used"] = True
     invite["used_by"] = email
     invite["used_at"] = time.time()

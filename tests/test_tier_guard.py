@@ -67,3 +67,16 @@ class TestTierHierarchy:
         request.state.user = UserContext(user_id="test", tier="platform_admin")
         result = require_tier(request, "member")
         assert result.tier == "platform_admin"
+
+    def test_require_tier_rejects_unknown_tier(self):
+        """Unknown tier in JWT should raise 403, not crash with ValueError."""
+        from unittest.mock import MagicMock
+
+        from web.api.auth import require_tier
+
+        request = MagicMock()
+        request.state.user = UserContext(user_id="test", tier="bogus_tier")
+
+        with pytest.raises(Exception) as exc_info:
+            require_tier(request, "member")
+        assert exc_info.value.status_code == 403

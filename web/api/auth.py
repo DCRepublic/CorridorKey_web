@@ -93,14 +93,24 @@ def require_user(request: Request) -> UserContext:
     return user
 
 
+TIER_HIERARCHY = ["pending", "member", "contributor", "org_admin", "platform_admin"]
+
+
 def require_tier(request: Request, min_tier: str) -> UserContext:
     """Require a minimum trust tier. Raises 403 if insufficient.
 
     Tier hierarchy: pending < member < contributor < org_admin < platform_admin
     """
     user = require_user(request)
-    tiers = ["pending", "member", "contributor", "org_admin", "platform_admin"]
-    if tiers.index(user.tier) < tiers.index(min_tier):
+    try:
+        user_level = TIER_HIERARCHY.index(user.tier)
+    except ValueError:
+        raise HTTPException(status_code=403, detail=f"Unknown tier: {user.tier}") from None
+    try:
+        min_level = TIER_HIERARCHY.index(min_tier)
+    except ValueError:
+        raise HTTPException(status_code=500, detail=f"Invalid tier requirement: {min_tier}") from None
+    if user_level < min_level:
         raise HTTPException(
             status_code=403,
             detail=f"Requires {min_tier} tier or higher (you are {user.tier})",
