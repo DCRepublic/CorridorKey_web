@@ -8,6 +8,7 @@
 	let name = $state('');
 	let error = $state('');
 	let loading = $state(false);
+	let tosAccepted = $state(false);
 	let inviteValid = $state<boolean | null>(null);
 
 	let inviteToken = $derived(new URL(page.url).searchParams.get('invite') ?? '');
@@ -33,6 +34,10 @@
 	}
 
 	async function handleSignup() {
+		if (!tosAccepted) {
+			error = 'You must accept the Terms of Service to create an account.';
+			return;
+		}
 		if (!email || !password) {
 			error = 'Email and password required';
 			return;
@@ -97,7 +102,11 @@
 					<span class="field-label mono">PASSWORD</span>
 					<input type="password" bind:value={password} placeholder="••••••••" onkeydown={onKeydown} />
 				</label>
-				<button class="auth-btn" onclick={handleSignup} disabled={loading || inviteValid !== true}>
+				<label class="tos-check">
+					<input type="checkbox" bind:checked={tosAccepted} />
+					<span>I agree to not redistribute content processed through this platform</span>
+				</label>
+				<button class="auth-btn" onclick={handleSignup} disabled={loading || inviteValid !== true || !tosAccepted}>
 					{loading ? 'Creating account...' : 'Create Account'}
 				</button>
 			</div>
@@ -177,6 +186,22 @@
 	}
 	.auth-btn:hover:not(:disabled) { background: #fff; box-shadow: 0 0 16px rgba(255, 242, 3, 0.25); }
 	.auth-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+	.tos-check {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--sp-2);
+		font-size: 12px;
+		color: var(--text-secondary);
+		cursor: pointer;
+		line-height: 1.4;
+	}
+
+	.tos-check input {
+		margin-top: 2px;
+		accent-color: var(--accent);
+		cursor: pointer;
+	}
 
 	.auth-footer { font-size: 13px; color: var(--text-tertiary); }
 	.auth-footer a { color: var(--accent); }
