@@ -20,12 +20,18 @@
 
 	let connected = $state(false);
 
-	const navItems = [
+	const baseNavItems = [
 		{ href: '/clips', label: 'Clips', icon: 'film' },
 		{ href: '/jobs', label: 'Jobs', icon: 'layers' },
 		{ href: '/nodes', label: 'Nodes', icon: 'server' },
 		{ href: '/settings', label: 'Settings', icon: 'sliders' },
 	];
+	const adminNavItem = { href: '/admin', label: 'Admin', icon: 'shield' };
+	let navItems = $derived(
+		authEnabled && getStoredUser()?.tier === 'platform_admin'
+			? [...baseNavItems, adminNavItem]
+			: baseNavItems
+	);
 
 	function isActive(href: string): boolean {
 		return page.url.pathname === href || page.url.pathname.startsWith(href + '/');
@@ -160,6 +166,8 @@
 								<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="4" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="2" y="10" width="12" height="4" rx="1" stroke="currentColor" stroke-width="1.2"/><path d="M2 8h12" stroke="currentColor" stroke-width="1.0" stroke-dasharray="2 1.5"/><circle cx="5" cy="4" r="0.8" fill="currentColor"/><circle cx="5" cy="12" r="0.8" fill="currentColor"/></svg>
 							{:else if item.icon === 'sliders'}
 								<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="1.2"/><line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.2"/><line x1="2" y1="12" x2="14" y2="12" stroke="currentColor" stroke-width="1.2"/><circle cx="5" cy="4" r="1.5" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"/><circle cx="10" cy="8" r="1.5" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="12" r="1.5" fill="var(--surface-2)" stroke="currentColor" stroke-width="1.2"/></svg>
+							{:else if item.icon === 'shield'}
+								<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1.5L3 3.5v4c0 3.5 2.5 5.5 5 6.5 2.5-1 5-3 5-6.5v-4L8 1.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
 							{/if}
 						</span>
 						<span class="nav-label">{item.label}</span>

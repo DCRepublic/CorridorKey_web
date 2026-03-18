@@ -111,3 +111,18 @@ def delete_user(user_id: str):
     if not user_store.delete_user(user_id):
         raise HTTPException(status_code=404, detail="User not found")
     return {"status": "deleted"}
+
+
+# --- Org listing (admin view) ---
+
+
+@router.get("/orgs")
+def list_all_orgs():
+    """List all organizations. Platform admin only."""
+    org_store = get_org_store()
+    orgs = org_store.list_orgs()
+    result = []
+    for org in orgs:
+        members = org_store.list_members(org.org_id)
+        result.append({**org.to_dict(), "member_count": len(members)})
+    return {"orgs": result}
