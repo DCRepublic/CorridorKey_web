@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from backend.job_queue import JobStatus
 from backend.natural_sort import natsorted
 
-from .. import persist
+from ..database import get_storage
 from ..deps import get_queue, get_service
 from ..nodes import GPUSlot, NodeInfo, NodeSchedule, registry
 from ..routes import clips as _clips_mod
@@ -40,18 +40,20 @@ router = APIRouter(prefix="/api/nodes", tags=["nodes"], dependencies=[Depends(_c
 
 def _save_node_config(node_id: str, node: NodeInfo) -> None:
     """Persist UI-configurable node settings."""
-    configs = persist.load_key("node_configs", {})
+    storage = get_storage()
+    configs = storage.get_setting("node_configs", {})
     configs[node_id] = {
         "paused": node.paused,
         "schedule": node.schedule.to_dict(),
         "accepted_types": node.accepted_types,
     }
-    persist.save_key("node_configs", configs)
+    storage.set_setting("node_configs", configs)
 
 
 def _restore_node_config(node: NodeInfo) -> None:
     """Restore persisted settings when a node re-registers."""
-    configs = persist.load_key("node_configs", {})
+    storage = get_storage()
+    configs = storage.get_setting("node_configs", {})
     cfg = configs.get(node.node_id)
     if cfg:
         node.paused = cfg.get("paused", False)

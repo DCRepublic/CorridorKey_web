@@ -16,9 +16,10 @@ from backend.job_queue import GPUJob, JobStatus, JobType
 from backend.project import projects_root
 
 from . import persist
+from .database import get_storage
 from .deps import get_queue, get_service
-from .reaper import start_reaper
 from .metrics import router as metrics_router
+from .reaper import start_reaper
 from .routes import auth, clips, jobs, nodes, preview, projects, system, upload
 from .worker import start_worker
 from .ws import manager, websocket_endpoint
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 def _save_history_snapshot(queue) -> None:
     """Serialize and persist the job history."""
     history = queue.history_snapshot
-    persist.save_job_history(
+    get_storage().save_job_history(
         [
             {
                 "id": j.id,
@@ -81,8 +82,8 @@ async def lifespan(app: FastAPI):
 
     queue = get_queue()
 
-    # Restore job history from disk
-    saved_history = persist.load_job_history()
+    # Restore job history from storage
+    saved_history = get_storage().load_job_history()
     if saved_history:
         for jd in saved_history:
             job = GPUJob(

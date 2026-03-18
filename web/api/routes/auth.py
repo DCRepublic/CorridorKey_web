@@ -17,8 +17,8 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .. import persist
 from ..auth import AUTH_ENABLED
+from ..database import get_storage
 from ..tier_guard import require_admin
 
 logger = logging.getLogger(__name__)
@@ -64,20 +64,22 @@ def generate_invite_token():
         raise HTTPException(status_code=400, detail="Auth is not enabled")
 
     token = secrets.token_urlsafe(32)
-    invites = persist.load_key("invite_tokens", {})
+    storage = get_storage()
+    invites = storage.get_invite_tokens()
     invites[token] = {
         "created_at": time.time(),
         "used": False,
         "used_by": None,
     }
-    persist.save_key("invite_tokens", invites)
+    storage.save_invite_token(token, invites[token])
     return {"token": token, "signup_url": f"/signup?invite={token}"}
 
 
 @router.post("/invite/validate")
 def validate_invite_token(token: str):
     """Check if an invite token is valid and unused."""
-    invites = persist.load_key("invite_tokens", {})
+    storage = get_storage()
+    invites = storage.get_invite_tokens()
     invite = invites.get(token)
     if not invite:
         raise HTTPException(status_code=404, detail="Invalid invite token")
@@ -89,21 +91,23 @@ def validate_invite_token(token: str):
 @router.post("/invite/consume")
 def consume_invite_token(token: str, email: str):
     """Mark an invite token as used after successful signup."""
-    invites = persist.load_key("invite_tokens", {})
+    storage = get_storage()
+    invites = storage.get_invite_tokens()
     invite = invites.get(token)
     if not invite:
         raise HTTPException(status_code=404, detail="Invalid invite token")
     invite["used"] = True
     invite["used_by"] = email
     invite["used_at"] = time.time()
-    persist.save_key("invite_tokens", invites)
+    storage.save_invite_token(token, invite)
     return {"status": "consumed"}
 
 
 @router.get("/invites", dependencies=[Depends(require_admin)])
 def list_invites():
     """List all invite tokens. Admin only."""
-    invites = persist.load_key("invite_tokens", {})
+    storage = get_storage()
+    invites = storage.get_invite_tokens()
     return {
         "invites": [
             {

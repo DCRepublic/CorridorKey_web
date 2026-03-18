@@ -39,9 +39,9 @@ def set_local_gpu_enabled(enabled: bool) -> None:
     global _local_gpu_enabled
     _local_gpu_enabled = enabled
     logger.info(f"Local GPU processing {'enabled' if enabled else 'disabled (remote-only)'}")
-    from . import persist
+    from .database import get_storage
 
-    persist.save_key("local_gpu_enabled", enabled)
+    get_storage().set_setting("local_gpu_enabled", enabled)
 
 
 def get_local_gpu_enabled() -> bool:
@@ -52,9 +52,9 @@ def set_local_claim_delay(seconds: float) -> None:
     global _local_claim_delay
     _local_claim_delay = max(0.0, seconds)
     logger.info(f"Local claim delay set to {_local_claim_delay:.1f}s")
-    from . import persist
+    from .database import get_storage
 
-    persist.save_key("local_claim_delay", seconds)
+    get_storage().set_setting("local_claim_delay", seconds)
 
 
 def get_local_claim_delay() -> float:
@@ -65,23 +65,24 @@ def set_vram_limit(gb: float) -> None:
     global _vram_limit_gb
     _vram_limit_gb = max(0.0, gb)
     logger.info(f"VRAM limit set to {_vram_limit_gb:.1f} GB")
-    from . import persist
+    from .database import get_storage
 
-    persist.save_key("vram_limit_gb", gb)
+    get_storage().set_setting("vram_limit_gb", gb)
 
 
 def restore_settings() -> None:
     """Restore persisted settings on startup."""
     global _local_gpu_enabled, _vram_limit_gb, _local_claim_delay
-    from . import persist
+    from .database import get_storage
 
-    _local_gpu_enabled = persist.load_key("local_gpu_enabled", True)
-    _vram_limit_gb = persist.load_key("vram_limit_gb", 0.0)
+    storage = get_storage()
+    _local_gpu_enabled = storage.get_setting("local_gpu_enabled", True)
+    _vram_limit_gb = storage.get_setting("vram_limit_gb", 0.0)
     if not _local_gpu_enabled:
         logger.info("Restored setting: local GPU processing disabled (remote-only)")
     if _vram_limit_gb > 0:
         logger.info(f"Restored setting: VRAM limit {_vram_limit_gb:.1f} GB")
-    _local_claim_delay = persist.load_key("local_claim_delay", 0.0)
+    _local_claim_delay = storage.get_setting("local_claim_delay", 0.0)
     if _local_claim_delay > 0:
         logger.info(f"Restored setting: local claim delay {_local_claim_delay:.1f}s")
 

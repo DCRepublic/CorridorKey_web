@@ -14,8 +14,12 @@ COMPOSE="docker compose -f docker-compose.dev.yml --env-file .env --env-file .en
 # Bring down existing containers first
 $COMPOSE down --remove-orphans 2>/dev/null || true
 
-# Start fresh
-$COMPOSE up -d --build "$@"
+# Start fresh — pass --build unless user explicitly passes --no-build
+if [[ " $* " == *" --no-build "* ]]; then
+  $COMPOSE up -d "$@"
+else
+  $COMPOSE up -d --build "$@"
+fi
 
 echo ""
 echo "CorridorKey:      http://localhost:3000"
