@@ -173,12 +173,8 @@ def signup_with_invite(req: SignupRequest):
                 user_data = json.loads(resp.read())
                 user_id = user_data.get("id", req.email)
         except Exception as e:
-            error_detail = str(e)
-            try:
-                error_detail = e.read().decode() if hasattr(e, "read") else str(e)
-            except Exception:
-                pass
-            raise HTTPException(status_code=502, detail=f"Failed to create user in GoTrue: {error_detail}") from e
+            logger.error(f"GoTrue admin API error: {e}")
+            raise HTTPException(status_code=502, detail="Failed to create user account") from e
     else:
         # Fallback: direct signup (only works if DISABLE_SIGNUP=false)
         import urllib.request
@@ -195,12 +191,8 @@ def signup_with_invite(req: SignupRequest):
                 user_data = json.loads(resp.read())
                 user_id = user_data.get("user", {}).get("id", req.email)
         except Exception as e:
-            error_detail = str(e)
-            try:
-                error_detail = e.read().decode() if hasattr(e, "read") else str(e)
-            except Exception:
-                pass
-            raise HTTPException(status_code=502, detail=f"Signup failed: {error_detail}") from e
+            logger.error(f"GoTrue signup error: {e}")
+            raise HTTPException(status_code=502, detail="Failed to create user account") from e
 
     # Consume invite
     invite["used"] = True
