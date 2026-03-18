@@ -86,7 +86,22 @@ class NodeInfo:
     # Empty list = accept all job types. Non-empty = only these types.
     accepted_types: list[str] = field(default_factory=list)
     cpu_stats: dict = field(default_factory=dict)  # {cpu_percent, cpu_count, ram_*}
+    health_history: list[dict] = field(default_factory=list, repr=False)  # last N snapshots
     recent_logs: list[str] = field(default_factory=list, repr=False)
+
+    def record_health(self, max_entries: int = 60) -> None:
+        """Record a health snapshot from current cpu_stats."""
+        if not self.cpu_stats:
+            return
+        entry = {
+            "ts": time.time(),
+            "cpu": self.cpu_stats.get("cpu_percent", 0),
+            "ram_used": self.cpu_stats.get("ram_used_gb", 0),
+            "ram_total": self.cpu_stats.get("ram_total_gb", 0),
+        }
+        self.health_history.append(entry)
+        if len(self.health_history) > max_entries:
+            self.health_history = self.health_history[-max_entries:]
 
     def append_logs(self, lines: list[str], max_lines: int = 200) -> None:
         self.recent_logs.extend(lines)

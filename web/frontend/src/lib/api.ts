@@ -263,7 +263,9 @@ export const api = {
 				accepted_types: types
 			}),
 		getLogs: (nodeId: string) =>
-			request<{ logs: string[] }>('GET', `/api/nodes/${encodeURIComponent(nodeId)}/logs`)
+			request<{ logs: string[] }>('GET', `/api/nodes/${encodeURIComponent(nodeId)}/logs`),
+		getHealth: (nodeId: string) =>
+			request<{ history: { ts: number; cpu: number; ram_used: number; ram_total: number }[] }>('GET', `/api/nodes/${encodeURIComponent(nodeId)}/health`)
 	},
 	system2: {
 		localGpus: () =>
@@ -278,6 +280,9 @@ export const api = {
 			),
 		getLocalGpu: () => request<{ enabled: boolean }>('GET', '/api/system/local-gpu'),
 		setLocalGpu: (enabled: boolean) =>
-			request<unknown>('POST', `/api/system/local-gpu?enabled=${enabled}`)
+			request<unknown>('POST', `/api/system/local-gpu?enabled=${enabled}`),
+		getClaimDelay: () => request<{ seconds: number }>('GET', '/api/system/claim-delay'),
+		setClaimDelay: (seconds: number) =>
+			request<unknown>('POST', `/api/system/claim-delay?seconds=${seconds}`)
 	}
 };

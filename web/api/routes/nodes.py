@@ -143,6 +143,7 @@ def node_heartbeat(node_id: str, req: NodeHeartbeatRequest):
             node.append_logs(req.logs)
         if req.cpu_stats:
             node.cpu_stats = req.cpu_stats
+            node.record_health()
         manager.send_node_update(node.to_dict())
     return {"status": "ok"}
 
@@ -158,6 +159,15 @@ def unregister_node(node_id: str):
 def list_nodes():
     """List all registered nodes."""
     return [n.to_dict() for n in registry.list_nodes()]
+
+
+@router.get("/{node_id}/health")
+def get_node_health(node_id: str):
+    """Get health history for a node (last 60 snapshots, ~10 min at 10s intervals)."""
+    node = registry.get_node(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
+    return {"history": node.health_history}
 
 
 @router.get("/{node_id}/logs")

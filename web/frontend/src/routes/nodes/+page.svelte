@@ -14,6 +14,7 @@
 	let localGpus = $state<LocalGPU[]>([]);
 	let localCpu = $state<{ cpu_percent: number; cpu_count: number; ram_total_gb: number; ram_used_gb: number; ram_free_gb: number } | null>(null);
 	let localGpuEnabled = $state(true);
+	let claimDelay = $state(0);
 	let editingSchedule = $state<string | null>(null);
 	let scheduleStart = $state('20:00');
 	let scheduleEnd = $state('08:00');
@@ -35,6 +36,7 @@
 		refreshNodes();
 		api.system2.localGpus().then((gpus) => (localGpus = gpus)).catch(() => {});
 		api.system2.getLocalGpu().then((r) => (localGpuEnabled = r.enabled)).catch(() => {});
+		api.system2.getClaimDelay().then((r) => (claimDelay = r.seconds)).catch(() => {});
 		api.system2.localCpu().then((c) => (localCpu = c)).catch(() => {});
 		const interval = setInterval(refreshNodes, 5000);
 		const cpuInterval = setInterval(() => {
@@ -142,6 +144,65 @@
 		editingTypes = null;
 	}
 
+	let viewingHealth = $state<string | null>(null);
+	let healthData = $state<{ ts: number; cpu: number; ram_used: number; ram_total: number }[]>([]);
+	let healthCanvas: HTMLCanvasElement | undefined = $state();
+
+	async function toggleHealth(nodeId: string) {
+		if (viewingHealth === nodeId) {
+			viewingHealth = null;
+			return;
+		}
+		try {
+			const res = await api.nodes.getHealth(nodeId);
+			healthData = res.history;
+			viewingHealth = nodeId;
+			// Draw after DOM updates
+			setTimeout(() => drawHealthGraph(), 0);
+		} catch {
+			healthData = [];
+			viewingHealth = nodeId;
+		}
+	}
+
+	function drawHealthGraph() {
+		if (!healthCanvas || healthData.length < 2) return;
+		const ctx = healthCanvas.getContext('2d');
+		if (!ctx) return;
+
+		const w = healthCanvas.width = healthCanvas.offsetWidth * 2;
+		const h = healthCanvas.height = 80;
+		ctx.clearRect(0, 0, w, h);
+
+		const len = healthData.length;
+		const xStep = w / (len - 1);
+
+		// CPU line (blue)
+		ctx.strokeStyle = '#009ADA';
+		ctx.lineWidth = 2;
+		ctx.beginPath();
+		for (let i = 0; i < len; i++) {
+			const x = i * xStep;
+			const y = h - (healthData[i].cpu / 100) * h;
+			if (i === 0) ctx.moveTo(x, y);
+			else ctx.lineTo(x, y);
+		}
+		ctx.stroke();
+
+		// RAM line (yellow)
+		ctx.strokeStyle = '#fff203';
+		ctx.lineWidth = 2;
+		ctx.beginPath();
+		for (let i = 0; i < len; i++) {
+			const x = i * xStep;
+			const ramPct = healthData[i].ram_total > 0 ? healthData[i].ram_used / healthData[i].ram_total : 0;
+			const y = h - ramPct * h;
+			if (i === 0) ctx.moveTo(x, y);
+			else ctx.lineTo(x, y);
+		}
+		ctx.stroke();
+	}
+
 	async function toggleLogs(nodeId: string) {
 		if (viewingLogs === nodeId) {
 			viewingLogs = null;
@@ -200,6 +261,30 @@
 					<span class="toggle-knob"></span>
 				</button>
 			</div>
+			{#if localGpuEnabled}
+				<div class="claim-delay-row">
+					<div class="claim-delay-info">
+						<span class="claim-delay-label">Node priority delay</span>
+						<span class="claim-delay-hint mono">
+							{#if claimDelay === 0}
+								Local claims immediately
+							{:else}
+								Waits {claimDelay}s for remote nodes first
+							{/if}
+						</span>
+					</div>
+					<input
+						type="range"
+						min="0"
+						max="10"
+						step="0.5"
+						bind:value={claimDelay}
+						onchange={() => api.system2.setClaimDelay(claimDelay)}
+						class="delay-slider"
+					/>
+					<span class="delay-val mono">{claimDelay === 0 ? 'OFF' : `${claimDelay}s`}</span>
+				</div>
+			{/if}
 			{#if localGpus.length > 0}
 				<div class="local-gpu-list">
 					{#each localGpus as gpu}
@@ -334,6 +419,14 @@
 								</button>
 								<button
 									class="btn-icon"
+									class:active={viewingHealth === node.node_id}
+									title="Health history"
+									onclick={() => toggleHealth(node.node_id)}
+								>
+									<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><polyline points="1,12 4,4 7,9 10,2 13,8 16,5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+								</button>
+								<button
+									class="btn-icon"
 									title="Job types"
 									onclick={() => openTypesEditor(node)}
 								>
@@ -422,6 +515,22 @@
 									<p class="log-empty mono">No logs yet</p>
 								{:else}
 									<pre class="log-output mono">{logLines.join('\n')}</pre>
+								{/if}
+							</div>
+						{/if}
+
+						<!-- Health graph -->
+						{#if viewingHealth === node.node_id}
+							<div class="node-health">
+								{#if healthData.length < 2}
+									<p class="log-empty mono">Not enough data yet (need 2+ heartbeats)</p>
+								{:else}
+									<div class="health-legend mono">
+										<span class="legend-cpu">CPU</span>
+										<span class="legend-ram">RAM</span>
+										<span class="legend-period">{healthData.length} samples (~{Math.round(healthData.length * 10 / 60)}min)</span>
+									</div>
+									<canvas bind:this={healthCanvas} class="health-canvas"></canvas>
 								{/if}
 							</div>
 						{/if}
@@ -577,6 +686,70 @@
 	.toggle-hint {
 		font-size: 11px;
 		color: var(--text-tertiary);
+	}
+
+	.claim-delay-row {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-3);
+		margin-top: var(--sp-2);
+		padding-top: var(--sp-2);
+		border-top: 1px solid var(--border-subtle);
+	}
+
+	.claim-delay-info {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 160px;
+	}
+
+	.claim-delay-label {
+		font-size: 12px;
+		color: var(--text-secondary);
+	}
+
+	.claim-delay-hint {
+		font-size: 10px;
+		color: var(--text-tertiary);
+	}
+
+	.delay-slider {
+		flex: 1;
+		-webkit-appearance: none;
+		appearance: none;
+		height: 4px;
+		background: var(--surface-4);
+		border-radius: 2px;
+		outline: none;
+		cursor: pointer;
+	}
+
+	.delay-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: var(--accent);
+		cursor: pointer;
+		border: 2px solid var(--surface-2);
+	}
+
+	.delay-slider::-moz-range-thumb {
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: var(--accent);
+		cursor: pointer;
+		border: 2px solid var(--surface-2);
+	}
+
+	.delay-val {
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--accent);
+		min-width: 32px;
+		text-align: right;
 	}
 
 	.toggle-btn {
@@ -1096,6 +1269,38 @@
 
 	.cpu-fill {
 		background: var(--secondary) !important;
+	}
+
+	.node-health {
+		margin-top: var(--sp-2);
+	}
+
+	.health-legend {
+		display: flex;
+		gap: var(--sp-3);
+		font-size: 10px;
+		margin-bottom: var(--sp-1);
+	}
+
+	.legend-cpu {
+		color: var(--secondary);
+	}
+
+	.legend-ram {
+		color: var(--accent);
+	}
+
+	.legend-period {
+		margin-left: auto;
+		color: var(--text-tertiary);
+	}
+
+	.health-canvas {
+		width: 100%;
+		height: 40px;
+		background: var(--surface-0);
+		border: 1px solid var(--border);
+		border-radius: 4px;
 	}
 
 	.btn-icon.active {
