@@ -1,0 +1,166 @@
+"""Organization management endpoints (CRKY-4).
+
+Provides CRUD for orgs, membership management, and org invites.
+All endpoints require authentication. Org-level operations check
+that the requesting user has the appropriate org role.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+
+from ..auth import AUTH_ENABLED, UserContext, get_current_user
+from ..orgs import get_org_store
+from ..tier_guard import require_authenticated, require_member
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/orgs", tags=["orgs"])
+
+
+class CreateOrgRequest(BaseModel):
+    name: str
+
+
+class AddMemberRequest(BaseModel):
+    user_id: str
+    role: str = "member"
+
+
+class UpdateRoleRequest(BaseModel):
+    role: str
+
+
+def _get_user(request: Request) -> UserContext:
+    """Extract authenticated user from request state. Raises 401 if missing."""
+    user = get_current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
+# --- Org CRUD ---
+
+
+@router.get("", dependencies=[Depends(require_authenticated)])
+def list_my_orgs(request: Request):
+    """List orgs the current user belongs to."""
+    if not AUTH_ENABLED:
+        return {"orgs": []}
+    user = _get_user(request)
+    store = get_org_store()
+    orgs = store.list_user_orgs(user.user_id)
+    return {"orgs": [o.to_dict() for o in orgs]}
+
+
+@router.post("", dependencies=[Depends(require_member)])
+def create_org(req: CreateOrgRequest, request: Request):
+    """Create a new org. Requires at least member tier."""
+    if not AUTH_ENABLED:
+        raise HTTPException(status_code=400, detail="Auth is not enabled")
+    user = _get_user(request)
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=400, detail="Org name is required")
+    store = get_org_store()
+    org = store.create_org(name=req.name.strip(), owner_id=user.user_id)
+    return org.to_dict()
+
+
+@router.get("/{org_id}", dependencies=[Depends(require_authenticated)])
+def get_org(org_id: str, request: Request):
+    """Get org details. Must be a member of the org (or platform admin)."""
+    user = _get_user(request)
+    store = get_org_store()
+    org = store.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    if not user.is_admin and not store.is_member(org_id, user.user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this org")
+    return org.to_dict()
+
+
+@router.delete("/{org_id}", dependencies=[Depends(require_authenticated)])
+def delete_org(org_id: str, request: Request):
+    """Delete an org. Must be the org owner or platform admin."""
+    user = _get_user(request)
+    store = get_org_store()
+    org = store.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    if org.personal:
+        raise HTTPException(status_code=400, detail="Cannot delete personal org")
+    if not user.is_admin and org.owner_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Only the org owner can delete this org")
+    store.delete_org(org_id)
+    return {"status": "deleted"}
+
+
+# --- Membership ---
+
+
+@router.get("/{org_id}/members", dependencies=[Depends(require_authenticated)])
+def list_members(org_id: str, request: Request):
+    """List org members. Must be a member of the org."""
+    user = _get_user(request)
+    store = get_org_store()
+    if not store.get_org(org_id):
+        raise HTTPException(status_code=404, detail="Org not found")
+    if not user.is_admin and not store.is_member(org_id, user.user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this org")
+    members = store.list_members(org_id)
+    return {"members": [m.to_dict() for m in members]}
+
+
+@router.post("/{org_id}/members", dependencies=[Depends(require_authenticated)])
+def add_member(org_id: str, req: AddMemberRequest, request: Request):
+    """Add a user to an org. Must be an org admin/owner or platform admin."""
+    user = _get_user(request)
+    store = get_org_store()
+    if not store.get_org(org_id):
+        raise HTTPException(status_code=404, detail="Org not found")
+    if not user.is_admin and not store.is_org_admin(org_id, user.user_id):
+        raise HTTPException(status_code=403, detail="Only org admins can add members")
+    if req.role not in ("member", "admin"):
+        raise HTTPException(status_code=400, detail="Role must be 'member' or 'admin'")
+    member = store.add_member(org_id, req.user_id, role=req.role)
+    return member.to_dict()
+
+
+@router.delete("/{org_id}/members/{member_user_id}", dependencies=[Depends(require_authenticated)])
+def remove_member(org_id: str, member_user_id: str, request: Request):
+    """Remove a user from an org. Org admin/owner, platform admin, or self."""
+    user = _get_user(request)
+    store = get_org_store()
+    org = store.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    if member_user_id == org.owner_id:
+        raise HTTPException(status_code=400, detail="Cannot remove the org owner")
+    is_self = member_user_id == user.user_id
+    if not is_self and not user.is_admin and not store.is_org_admin(org_id, user.user_id):
+        raise HTTPException(status_code=403, detail="Not authorized to remove this member")
+    if not store.remove_member(org_id, member_user_id):
+        raise HTTPException(status_code=404, detail="User is not a member of this org")
+    return {"status": "removed"}
+
+
+@router.patch("/{org_id}/members/{member_user_id}/role", dependencies=[Depends(require_authenticated)])
+def update_member_role(org_id: str, member_user_id: str, req: UpdateRoleRequest, request: Request):
+    """Change a member's role. Must be org owner or platform admin."""
+    user = _get_user(request)
+    store = get_org_store()
+    org = store.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    if req.role not in ("member", "admin"):
+        raise HTTPException(status_code=400, detail="Role must be 'member' or 'admin'")
+    if not user.is_admin and org.owner_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Only the org owner can change roles")
+    if member_user_id == org.owner_id:
+        raise HTTPException(status_code=400, detail="Cannot change the owner's role")
+    result = store.update_member_role(org_id, member_user_id, req.role)
+    if not result:
+        raise HTTPException(status_code=404, detail="User is not a member of this org")
+    return result.to_dict()
