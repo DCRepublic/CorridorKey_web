@@ -135,6 +135,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Auth middleware (must be added before GZip so it runs first)
+    from .auth import AUTH_ENABLED, AuthMiddleware
+
+    app.add_middleware(AuthMiddleware)
+    if AUTH_ENABLED:
+        logger.info("Auth enabled — JWT validation active on API routes")
+
     # Compress responses > 1KB (speeds up file transfers to nodes)
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
