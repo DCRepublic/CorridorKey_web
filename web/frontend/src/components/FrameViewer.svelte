@@ -33,8 +33,32 @@
 	let mode = $state<'frame' | 'video' | 'compare'>('frame');
 	let compareMode = $state<'split' | 'wipe'>('split');
 	let bgMode = $state<'checker' | 'black' | 'white' | 'green'>('checker');
+	let onionSkin = $state(false);
+
+	let prevFrameUrl = $derived(
+		onionSkin && currentFrame > 0 && frameCount > 0
+			? api.preview.url(clipName, selectedPass, currentFrame - 1)
+			: null
+	);
+	let nextFrameUrl = $derived(
+		onionSkin && currentFrame < frameCount - 1 && frameCount > 0
+			? api.preview.url(clipName, selectedPass, currentFrame + 1)
+			: null
+	);
 	let showHistogram = $state(false);
 	let histCanvas: HTMLCanvasElement | undefined = $state();
+	let mainImgEl: HTMLImageElement | undefined = $state();
+
+	// Redraw histogram when frame changes or histogram toggled
+	$effect(() => {
+		// Subscribe to these so the effect re-runs
+		void currentFrame;
+		void selectedPass;
+		void showHistogram;
+		if (mainImgEl && showHistogram && mainImgEl.complete) {
+			drawHistogram(mainImgEl);
+		}
+	});
 
 	function drawHistogram(imgEl: HTMLImageElement) {
 		if (!histCanvas || !showHistogram) return;
@@ -298,6 +322,7 @@
 				bgMode = modes[(modes.indexOf(bgMode) + 1) % modes.length];
 			} break;
 			case 'h': e.preventDefault(); showHistogram = !showHistogram; break;
+			case 'o': e.preventDefault(); onionSkin = !onionSkin; break;
 		}
 	}
 </script>
@@ -403,7 +428,14 @@
 				<span class="not-ready-hint mono">Frame {currentFrame + 1} — processing up to {completedFrames}</span>
 			</div>
 		{:else if imgUrl && !error}
+			{#if prevFrameUrl}
+				<img src={prevFrameUrl} alt="Previous frame" class="onion-prev" />
+			{/if}
+			{#if nextFrameUrl}
+				<img src={nextFrameUrl} alt="Next frame" class="onion-next" />
+			{/if}
 			<img
+				bind:this={mainImgEl}
 				src={imgUrl}
 				alt="Frame {currentFrame} — {selectedPass}"
 				class:loading
@@ -491,6 +523,11 @@
 				<button class="mode-btn mono bg-toggle" class:active={showHistogram} onclick={() => { showHistogram = !showHistogram; }} title="Histogram (H)">
 					RGB
 				</button>
+				{#if frameCount > 1}
+					<button class="mode-btn mono bg-toggle" class:active={onionSkin} onclick={() => { onionSkin = !onionSkin; }} title="Onion skin (O)">
+						ON
+					</button>
+				{/if}
 			</div>
 		</div>
 
@@ -587,6 +624,29 @@
 
 	.viewer-viewport img.loading {
 		opacity: 0.4;
+	}
+
+	.onion-prev, .onion-next {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
+		pointer-events: none;
+		z-index: 1;
+		mix-blend-mode: screen;
+		transform: var(--zoom-transform, none);
+		transform-origin: 0 0;
+	}
+
+	.onion-prev {
+		opacity: 0.2;
+		filter: hue-rotate(180deg) saturate(0.3);
+	}
+
+	.onion-next {
+		opacity: 0.15;
+		filter: hue-rotate(90deg) saturate(0.3);
 	}
 
 	.video-player {
