@@ -1,0 +1,164 @@
+"""User management and approval workflow (CRKY-2).
+
+Tracks users locally and provides tier management. When a user signs up
+via the invite flow, they're recorded here with tier=pending. Admins
+approve (promoting to member) or reject users through the API.
+
+Tier updates are written to both:
+1. Local storage (ck_settings key "users") — for listing/querying
+2. Supabase auth.users.raw_app_meta_data — so the JWT reflects the new tier
+
+The Supabase update requires CK_DATABASE_URL to be set (pointing at the
+same Postgres instance as GoTrue). Without it, only local storage is updated
+and the user must re-login to pick up the new tier from a refreshed JWT.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from dataclasses import dataclass
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_PG_URL = os.environ.get("CK_DATABASE_URL", "")
+
+
+@dataclass
+class UserRecord:
+    """Local user record for tracking and approval."""
+
+    user_id: str
+    email: str
+    tier: str = "pending"
+    name: str = ""
+    signed_up_at: float = 0.0
+    approved_at: float = 0.0
+    approved_by: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "user_id": self.user_id,
+            "email": self.email,
+            "tier": self.tier,
+            "name": self.name,
+            "signed_up_at": self.signed_up_at,
+            "approved_at": self.approved_at,
+            "approved_by": self.approved_by,
+        }
+
+
+class UserStore:
+    """Manages local user records backed by the database abstraction."""
+
+    def __init__(self):
+        from .database import get_storage
+
+        self._storage = get_storage()
+
+    def _load_users(self) -> dict[str, dict]:
+        return self._storage.get_setting("users", {})
+
+    def _save_users(self, users: dict[str, dict]) -> None:
+        self._storage.set_setting("users", users)
+
+    def record_signup(self, user_id: str, email: str, name: str = "") -> UserRecord:
+        """Record a new user signup. Called after invite consumption."""
+        users = self._load_users()
+        if user_id in users:
+            return UserRecord(**users[user_id])
+        record = UserRecord(
+            user_id=user_id,
+            email=email,
+            tier="pending",
+            name=name,
+            signed_up_at=time.time(),
+        )
+        users[user_id] = record.to_dict()
+        self._save_users(users)
+        return record
+
+    def get_user(self, user_id: str) -> UserRecord | None:
+        users = self._load_users()
+        data = users.get(user_id)
+        return UserRecord(**data) if data else None
+
+    def list_users(self, tier_filter: str | None = None) -> list[UserRecord]:
+        """List all users, optionally filtered by tier."""
+        users = self._load_users()
+        records = [UserRecord(**v) for v in users.values()]
+        if tier_filter:
+            records = [r for r in records if r.tier == tier_filter]
+        return records
+
+    def set_tier(self, user_id: str, tier: str, approved_by: str = "") -> UserRecord | None:
+        """Update a user's tier in local storage and Supabase."""
+        users = self._load_users()
+        if user_id not in users:
+            return None
+        users[user_id]["tier"] = tier
+        if tier != "pending":
+            users[user_id]["approved_at"] = time.time()
+            users[user_id]["approved_by"] = approved_by
+        self._save_users(users)
+
+        # Also update Supabase auth.users if we have a DB connection
+        _update_supabase_tier(user_id, tier)
+
+        return UserRecord(**users[user_id])
+
+    def delete_user(self, user_id: str) -> bool:
+        """Remove a user record."""
+        users = self._load_users()
+        if user_id not in users:
+            return False
+        del users[user_id]
+        self._save_users(users)
+        return True
+
+
+def _update_supabase_tier(user_id: str, tier: str) -> None:
+    """Update the user's tier in Supabase auth.users.raw_app_meta_data.
+
+    This ensures the next JWT refresh picks up the new tier without
+    requiring manual SQL. Fails silently if CK_DATABASE_URL is not set.
+    """
+    if not _PG_URL:
+        logger.debug("No CK_DATABASE_URL — skipping Supabase tier update")
+        return
+    try:
+        import psycopg2
+
+        conn = psycopg2.connect(_PG_URL)
+        conn.autocommit = True
+        cur = conn.cursor()
+        meta_patch = json.dumps({"tier": tier})
+        cur.execute(
+            "UPDATE auth.users SET raw_app_meta_data = raw_app_meta_data || %s::jsonb WHERE id = %s::uuid",
+            (meta_patch, user_id),
+        )
+        updated = cur.rowcount
+        cur.close()
+        conn.close()
+        if updated:
+            logger.info(f"Updated Supabase tier for {user_id} to {tier}")
+        else:
+            logger.warning(f"No Supabase auth.users row found for {user_id}")
+    except ImportError:
+        logger.debug("psycopg2 not available — skipping Supabase tier update")
+    except Exception as e:
+        logger.warning(f"Failed to update Supabase tier for {user_id}: {e}")
+
+
+# Singleton
+_user_store: UserStore | None = None
+
+
+def get_user_store() -> UserStore:
+    global _user_store
+    if _user_store is None:
+        _user_store = UserStore()
+    return _user_store

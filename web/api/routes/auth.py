@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from ..auth import AUTH_ENABLED
 from ..database import get_storage
 from ..tier_guard import require_admin
+from ..users import get_user_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -107,6 +108,14 @@ def consume_invite_token(token: str, email: str):
     invite["used_by"] = email
     invite["used_at"] = time.time()
     storage.save_invite_token(token, invite)
+
+    # Record the user for the approval workflow (CRKY-2)
+    # user_id comes from GoTrue signup — the frontend passes email here,
+    # and the actual user_id will be populated when they first authenticate.
+    # For now, track by email so admins can see who signed up.
+    user_store = get_user_store()
+    user_store.record_signup(user_id=email, email=email)
+
     return {"status": "consumed"}
 
 
