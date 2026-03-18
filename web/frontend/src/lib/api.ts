@@ -3,10 +3,15 @@
 const BASE = '';
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-	const opts: RequestInit = {
-		method,
-		headers: { 'Content-Type': 'application/json' }
-	};
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+	// Attach JWT if available (auth may be disabled, in which case no token exists)
+	const token = localStorage.getItem('ck:auth_token');
+	if (token) {
+		headers['Authorization'] = `Bearer ${token}`;
+	}
+
+	const opts: RequestInit = { method, headers };
 	if (body !== undefined) {
 		opts.body = JSON.stringify(body);
 	}

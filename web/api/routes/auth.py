@@ -52,6 +52,7 @@ def auth_status():
     return {
         "auth_enabled": AUTH_ENABLED,
         "supabase_url": os.environ.get("CK_SUPABASE_URL", ""),
+        "gotrue_url": os.environ.get("CK_GOTRUE_URL", "http://localhost:54324"),
     }
 
 

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
+	import { signup } from '$lib/auth';
 
 	let email = $state('');
 	let password = $state('');
@@ -43,9 +44,12 @@
 		loading = true;
 		error = '';
 		try {
-			// Phase 2 will wire actual Supabase signup here
-			// For now, consume the invite token to mark it as used
+			// Create the user in GoTrue
+			await signup(email, password);
+
+			// Mark the invite token as consumed
 			await fetch(`/api/auth/invite/consume?token=${encodeURIComponent(inviteToken)}&email=${encodeURIComponent(email)}`, { method: 'POST' });
+
 			goto('/pending');
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Signup failed';

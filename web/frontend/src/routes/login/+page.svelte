@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { api } from '$lib/api';
+	import { login } from '$lib/auth';
 
 	let email = $state('');
 	let password = $state('');
@@ -15,13 +15,12 @@
 		loading = true;
 		error = '';
 		try {
-			// For MVP, auth status check — actual Supabase login will be wired in Phase 2
-			const status = await fetch('/api/auth/status').then((r) => r.json());
-			if (!status.auth_enabled) {
+			const session = await login(email, password);
+			if (session.user.tier === 'pending') {
+				goto('/pending');
+			} else {
 				goto('/clips');
-				return;
 			}
-			error = 'Supabase auth integration pending (Phase 2)';
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Login failed';
 		} finally {
@@ -91,22 +90,9 @@
 		gap: var(--sp-4);
 	}
 
-	.auth-logo {
-		width: 120px;
-		filter: drop-shadow(0 0 4px rgba(255, 242, 3, 0.15));
-	}
-
-	.auth-title {
-		font-size: 11px;
-		letter-spacing: 0.2em;
-		color: var(--text-tertiary);
-	}
-
-	.auth-subtitle {
-		font-size: 14px;
-		color: var(--text-secondary);
-		margin-top: calc(-1 * var(--sp-2));
-	}
+	.auth-logo { width: 120px; filter: drop-shadow(0 0 4px rgba(255, 242, 3, 0.15)); }
+	.auth-title { font-size: 11px; letter-spacing: 0.2em; color: var(--text-tertiary); }
+	.auth-subtitle { font-size: 14px; color: var(--text-secondary); margin-top: calc(-1 * var(--sp-2)); }
 
 	.auth-error {
 		width: 100%;
@@ -118,24 +104,9 @@
 		color: var(--state-error);
 	}
 
-	.auth-form {
-		width: 100%;
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-3);
-	}
-
-	.auth-field {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.field-label {
-		font-size: 10px;
-		color: var(--text-tertiary);
-		letter-spacing: 0.08em;
-	}
+	.auth-form { width: 100%; display: flex; flex-direction: column; gap: var(--sp-3); }
+	.auth-field { display: flex; flex-direction: column; gap: 4px; }
+	.field-label { font-size: 10px; color: var(--text-tertiary); letter-spacing: 0.08em; }
 
 	.auth-field input {
 		padding: 10px 12px;
@@ -147,14 +118,8 @@
 		outline: none;
 		font-family: inherit;
 	}
-
-	.auth-field input:focus {
-		border-color: var(--accent);
-	}
-
-	.auth-field input::placeholder {
-		color: var(--text-tertiary);
-	}
+	.auth-field input:focus { border-color: var(--accent); }
+	.auth-field input::placeholder { color: var(--text-tertiary); }
 
 	.auth-btn {
 		padding: 12px;
@@ -168,23 +133,9 @@
 		transition: all 0.15s;
 		margin-top: var(--sp-1);
 	}
+	.auth-btn:hover:not(:disabled) { background: #fff; box-shadow: 0 0 16px rgba(255, 242, 3, 0.25); }
+	.auth-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-	.auth-btn:hover:not(:disabled) {
-		background: #fff;
-		box-shadow: 0 0 16px rgba(255, 242, 3, 0.25);
-	}
-
-	.auth-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.auth-footer {
-		font-size: 13px;
-		color: var(--text-tertiary);
-	}
-
-	.auth-footer a {
-		color: var(--accent);
-	}
+	.auth-footer { font-size: 13px; color: var(--text-tertiary); }
+	.auth-footer a { color: var(--accent); }
 </style>
