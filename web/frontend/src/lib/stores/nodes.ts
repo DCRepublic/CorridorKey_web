@@ -37,6 +37,7 @@ export interface NodeInfo {
 	org_name?: string;
 	visibility: string;
 	can_manage?: boolean;
+	reputation?: { score: number; success_rate: number; avg_fps: number; completed_jobs: number; failed_jobs: number };
 	cpu_stats: {
 		cpu_percent: number;
 		cpu_count: number;

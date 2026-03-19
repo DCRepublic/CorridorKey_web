@@ -49,6 +49,20 @@
 	const publicPaths = ['/login', '/signup', '/pending'];
 	let isPublicPage = $derived(publicPaths.some((p) => page.url.pathname.startsWith(p)));
 
+	async function refreshCredits() {
+		try {
+			const token = localStorage.getItem('ck:auth_token');
+			const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
+			const orgsRes = await fetch('/api/orgs', { headers }).then(r => r.json());
+			const orgId = orgsRes.orgs?.[0]?.org_id;
+			if (orgId) {
+				const credits = await fetch(`/api/orgs/${orgId}/credits`, { headers }).then(r => r.json());
+				const hrs = (credits.balance_seconds / 3600).toFixed(1);
+				creditBalance = { hours: hrs, positive: credits.balance_seconds >= 0 };
+			}
+		} catch { /* ignore */ }
+	}
+
 	function handleLogout() {
 		logout();
 		window.location.href = '/login';
@@ -105,19 +119,7 @@
 		refreshNodes();
 
 		// Load credit balance for sidebar (CRKY-6)
-		if (authEnabled) {
-			try {
-				const token = localStorage.getItem('ck:auth_token');
-				const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-				const orgsRes = await fetch('/api/orgs', { headers }).then(r => r.json());
-				const orgId = orgsRes.orgs?.[0]?.org_id;
-				if (orgId) {
-					const credits = await fetch(`/api/orgs/${orgId}/credits`, { headers }).then(r => r.json());
-					const hrs = (credits.balance_seconds / 3600).toFixed(1);
-					creditBalance = { hours: hrs, positive: credits.balance_seconds >= 0 };
-				}
-			} catch { /* ignore */ }
-		}
+		if (authEnabled) refreshCredits();
 
 		const unsubWs = onMessage((msg) => {
 			if (msg.type === 'job:progress') {
@@ -143,6 +145,7 @@
 				}
 				refreshJobs();
 				refreshClips();
+				if (d.status === 'completed' || d.status === 'failed') refreshCredits();
 			} else if (msg.type === 'job:warning') {
 				const d = msg.data as { message: string };
 				toast.warning(d.message);

@@ -377,6 +377,14 @@
   -e CK_NODE_NAME=my-node \
   {setupInfo.image}</pre>
 					</div>
+
+					<div class="code-block">
+						<span class="code-label mono">Docker Compose — Hardened (untrusted nodes)</span>
+						<pre class="code mono"># For untrusted nodes: read-only fs, tmpfs frame I/O, dropped capabilities
+docker compose -f deploy/docker-compose.node-hardened.yml up -d
+# Frames processed in RAM only, no persistent disk access.
+# Set CK_MAIN_URL and CK_AUTH_TOKEN in deploy/.env first.</pre>
+					</div>
 				</div>
 
 				<!-- Active Tokens -->
@@ -539,6 +547,11 @@
 								>{node.visibility === 'shared' ? 'SHARED' : 'PRIVATE'}</button>
 							{:else if node.visibility === 'shared'}
 								<span class="visibility-badge mono shared">SHARED</span>
+							{/if}
+							{#if node.reputation}
+								<span class="rep-badge mono" class:rep-good={node.reputation.score >= 70} class:rep-mid={node.reputation.score >= 40 && node.reputation.score < 70} class:rep-bad={node.reputation.score < 40}>
+									{node.reputation.score}
+								</span>
 							{/if}
 							{#if node.paused}
 								<span class="node-badge paused mono">PAUSED</span>
@@ -1524,6 +1537,14 @@
 	}
 
 	.node-org { font-size: 10px; color: var(--text-tertiary); letter-spacing: 0.06em; }
+
+	.rep-badge {
+		font-size: 10px; font-weight: 700; padding: 1px 6px;
+		border-radius: 3px; letter-spacing: 0.04em;
+	}
+	.rep-good { background: rgba(93, 216, 121, 0.12); color: var(--state-complete); }
+	.rep-mid { background: rgba(255, 242, 3, 0.12); color: var(--accent); }
+	.rep-bad { background: rgba(255, 82, 82, 0.12); color: var(--state-error); }
 
 	.visibility-badge {
 		font-size: 9px; letter-spacing: 0.06em; padding: 2px 6px;

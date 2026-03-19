@@ -25,7 +25,7 @@
 	const TIERS = ['pending', 'member', 'contributor', 'org_admin', 'platform_admin'];
 
 	let authorized = $state(false);
-	let activeTab = $state<'users' | 'orgs' | 'credits' | 'stats'>('users');
+	let activeTab = $state<'users' | 'orgs' | 'credits' | 'stats' | 'audit'>('users');
 	let users = $state<UserRecord[]>([]);
 	let pendingUsers = $state<UserRecord[]>([]);
 	let orgs = $state<OrgRecord[]>([]);
@@ -47,6 +47,12 @@
 	// User activity detail
 	let selectedUserActivity = $state<any>(null);
 	let activityLoading = $state(false);
+
+	// Audit log
+	let auditEntries = $state<{ id: number; timestamp: string; actor_user_id: string; action: string; target_type: string; target_id: string; details: any; ip_address: string }[]>([]);
+	let auditTotal = $state(0);
+	let auditPage = $state(0);
+	let auditFilter = $state('');
 
 	async function adminFetch(path: string, opts?: RequestInit) {
 		const token = localStorage.getItem('ck:auth_token');
@@ -132,6 +138,16 @@
 		finally { activityLoading = false; }
 	}
 
+	async function loadAudit() {
+		try {
+			const params = new URLSearchParams({ limit: '50', offset: String(auditPage * 50) });
+			if (auditFilter) params.set('action', auditFilter);
+			const res = await adminFetch(`/api/admin/audit?${params}`);
+			auditEntries = res.entries;
+			auditTotal = res.total;
+		} catch { auditEntries = []; }
+	}
+
 	async function loadOrgs() {
 		const res = await adminFetch('/api/admin/orgs');
 		orgs = res.orgs;
@@ -186,7 +202,7 @@
 		}
 		authorized = true;
 		try {
-			await Promise.all([loadUsers(), loadOrgs(), loadInvites(), loadCredits(), loadStats()]);
+			await Promise.all([loadUsers(), loadOrgs(), loadInvites(), loadCredits(), loadStats(), loadAudit()]);
 		} finally {
 			loading = false;
 		}
@@ -234,6 +250,11 @@
 					class:active={activeTab === 'stats'}
 					onclick={() => activeTab = 'stats'}
 				>STATS</button>
+				<button
+					class="tab-btn mono"
+					class:active={activeTab === 'audit'}
+					onclick={() => activeTab = 'audit'}
+				>AUDIT</button>
 			</div>
 		</div>
 
@@ -553,6 +574,53 @@
 					</div>
 				{/if}
 			{/if}
+
+		{:else if activeTab === 'audit'}
+			<!-- Audit Log -->
+			<div class="section">
+				<h2 class="section-title mono">AUDIT LOG <span class="count">{auditTotal}</span></h2>
+				<div class="audit-controls">
+					<select class="tier-select mono" bind:value={auditFilter} onchange={() => { auditPage = 0; loadAudit(); }}>
+						<option value="">All actions</option>
+						<option value="user.approved">user.approved</option>
+						<option value="user.rejected">user.rejected</option>
+						<option value="user.tier_changed">user.tier_changed</option>
+						<option value="credits.granted">credits.granted</option>
+						<option value="org.ip_allowlist_updated">org.ip_allowlist_updated</option>
+					</select>
+				</div>
+				<div class="table-wrap">
+					<table class="data-table">
+						<thead>
+							<tr>
+								<th class="mono">TIME</th>
+								<th class="mono">ACTION</th>
+								<th class="mono">TARGET</th>
+								<th class="mono">ACTOR</th>
+								<th class="mono">IP</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each auditEntries as e (e.id)}
+								<tr>
+									<td class="mono">{e.timestamp?.substring(0, 19).replace('T', ' ') ?? '—'}</td>
+									<td><span class="audit-action mono">{e.action}</span></td>
+									<td class="mono">{e.target_type}:{(e.target_id ?? '').substring(0, 12)}</td>
+									<td class="mono">{(e.actor_user_id ?? '').substring(0, 12)}</td>
+									<td class="mono">{e.ip_address ?? '—'}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+				{#if auditTotal > 50}
+					<div class="audit-pager">
+						<button class="btn btn-subtle-sm mono" disabled={auditPage === 0} onclick={() => { auditPage--; loadAudit(); }}>PREV</button>
+						<span class="mono">{auditPage * 50 + 1}–{Math.min((auditPage + 1) * 50, auditTotal)} of {auditTotal}</span>
+						<button class="btn btn-subtle-sm mono" disabled={(auditPage + 1) * 50 >= auditTotal} onclick={() => { auditPage++; loadAudit(); }}>NEXT</button>
+					</div>
+				{/if}
+			</div>
 		{/if}
 	{/if}
 </div>
@@ -837,6 +905,10 @@
 	.activity-stat { display: flex; flex-direction: column; gap: 2px; }
 	.activity-label { font-size: 10px; letter-spacing: 0.08em; color: var(--text-tertiary); }
 	.activity-value { font-size: 13px; color: var(--text-primary); }
+
+	.audit-controls { margin-bottom: var(--sp-3); }
+	.audit-action { font-size: 11px; color: var(--accent); }
+	.audit-pager { display: flex; align-items: center; gap: var(--sp-3); margin-top: var(--sp-3); justify-content: center; }
 
 	.form-error {
 		padding: var(--sp-2) var(--sp-3);

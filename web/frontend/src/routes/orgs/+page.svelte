@@ -31,6 +31,8 @@
 	let membersLoading = $state(false);
 	let orgCredits = $state<{ contributed_hours: number; consumed_hours: number; balance_seconds: number; ratio: number | null } | null>(null);
 	let orgStorage = $state<{ used_gb: number; quota_gb: number; percent_used: number } | null>(null);
+	let ipAllowlist = $state<string[]>([]);
+	let newCidr = $state('');
 
 	// Add member
 	let addMemberEmail = $state('');
@@ -80,6 +82,7 @@
 		membersLoading = true;
 		orgCredits = null;
 		orgStorage = null;
+		ipAllowlist = [];
 		try {
 			const [membersRes, creditsRes, storageRes] = await Promise.all([
 				authFetch(`/api/orgs/${org.org_id}/members`),
@@ -89,6 +92,10 @@
 			members = membersRes.members;
 			orgCredits = creditsRes;
 			orgStorage = storageRes;
+			try {
+				const alRes = await authFetch(`/api/orgs/${org.org_id}/ip-allowlist`);
+				ipAllowlist = alRes.cidrs || [];
+			} catch { ipAllowlist = []; }
 		} catch {
 			members = [];
 		} finally {
@@ -137,6 +144,29 @@
 			await authFetch(`/api/orgs/${org.org_id}`, { method: 'DELETE' });
 			selectedOrg = null;
 			await loadOrgs();
+		} catch { /* ignore */ }
+	}
+
+	async function addCidr() {
+		if (!selectedOrg || !newCidr.trim()) return;
+		const updated = [...ipAllowlist, newCidr.trim()];
+		try {
+			await authFetch(`/api/orgs/${selectedOrg.org_id}/ip-allowlist`, {
+				method: 'PUT', body: JSON.stringify({ cidrs: updated })
+			});
+			ipAllowlist = updated;
+			newCidr = '';
+		} catch { /* ignore */ }
+	}
+
+	async function removeCidr(cidr: string) {
+		if (!selectedOrg) return;
+		const updated = ipAllowlist.filter(c => c !== cidr);
+		try {
+			await authFetch(`/api/orgs/${selectedOrg.org_id}/ip-allowlist`, {
+				method: 'PUT', body: JSON.stringify({ cidrs: updated })
+			});
+			ipAllowlist = updated;
 		} catch { /* ignore */ }
 	}
 
@@ -266,6 +296,31 @@
 					{/if}
 				{/if}
 			</section>
+
+			<!-- IP Allowlist (org admins only) -->
+			{#if isOwner(selectedOrg)}
+				<section class="detail-card">
+					<h2 class="card-title mono">IP ALLOWLIST</h2>
+					{#if ipAllowlist.length === 0}
+						<p class="card-desc">No IP restrictions. All IPs can access this org.</p>
+					{:else}
+						<div class="cidr-list">
+							{#each ipAllowlist as cidr}
+								<div class="cidr-row">
+									<span class="mono">{cidr}</span>
+									<button class="btn-icon" onclick={() => removeCidr(cidr)} title="Remove">
+										<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5"/></svg>
+									</button>
+								</div>
+							{/each}
+						</div>
+					{/if}
+					<div class="add-cidr-row">
+						<input type="text" class="input mono" bind:value={newCidr} placeholder="192.168.1.0/24" />
+						<button class="btn btn-primary mono" onclick={addCidr}>ADD</button>
+					</div>
+				</section>
+			{/if}
 
 			{#if isOwner(selectedOrg) && !selectedOrg.personal}
 				<button class="btn btn-danger mono" onclick={() => deleteOrg(selectedOrg)}>
@@ -446,6 +501,10 @@
 		transition: width 0.3s;
 	}
 	.storage-text { font-size: 12px; color: var(--text-secondary); }
+
+	.cidr-list { display: flex; flex-direction: column; gap: var(--sp-1); }
+	.cidr-row { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-1) 0; }
+	.add-cidr-row { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
 
 	.add-member { border-top: 1px solid var(--border); padding-top: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); }
 </style>
