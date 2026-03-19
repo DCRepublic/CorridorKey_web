@@ -304,4 +304,10 @@ TAG_METADATA = [
         "description": "Prometheus metrics export at `/metrics`. Enabled via `CK_METRICS_ENABLED=true`. "
         "Includes job queue stats, node health, WebSocket connections, and per-node GPU metrics.",
     },
+    {
+        "name": "status",
+        "description": "Public platform status page — no authentication required. Shows API health, "
+        "component statuses, node counts, queue depth, job processing times, and incident history. "
+        "Includes a shields.io-compatible SVG badge for README embeds.",
+    },
 ]

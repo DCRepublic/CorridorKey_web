@@ -21,6 +21,7 @@ from .deps import get_queue, get_service
 from .metrics import router as metrics_router
 from .reaper import start_reaper
 from .routes import admin, auth, clips, jobs, nodes, nodes_mgmt, orgs, preview, projects, system, upload
+from .status import router as status_router
 from .worker import start_worker
 from .ws import manager, websocket_endpoint
 
@@ -199,7 +200,17 @@ async def lifespan(app: FastAPI):
     app.state.reaper_thread = reaper_thread
     app.state.stop_event = stop_event
 
+    # Start status page sampler (CRKY-51)
+    from .status import start_status_sampler
+
+    start_status_sampler(interval=60)
+
     yield
+
+    # Stop status sampler
+    from .status import stop_status_sampler
+
+    stop_status_sampler()
 
     stop_event.set()
     worker_thread.join(timeout=5)
@@ -354,6 +365,7 @@ def create_app() -> FastAPI:
     app.include_router(upload.router)
     app.include_router(orgs.router)
     app.include_router(admin.router)
+    app.include_router(status_router)
 
     # WebSocket
     app.websocket("/ws")(websocket_endpoint)

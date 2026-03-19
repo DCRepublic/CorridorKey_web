@@ -66,6 +66,7 @@ PUBLIC_PREFIXES = (
     "/api/auth/me",  # Current user tier check (pending page polling)
     "/api/nodes/",  # Nodes use CK_AUTH_TOKEN, not JWT
     "/api/system/weights/",  # Weight sync for nodes
+    "/api/status",  # Public status page (CRKY-51)
 )
 
 

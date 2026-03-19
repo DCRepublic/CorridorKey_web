@@ -46,6 +46,7 @@ EXEMPT_PREFIXES = (
     "/api/nodes/",       # Node agent polling (every 2s)
     "/api/system/vram",  # VRAM polling (every 10s)
     "/api/farm",         # Node list refresh on WS events
+    "/api/status",       # Public status page (CRKY-51)
 )
 
 
