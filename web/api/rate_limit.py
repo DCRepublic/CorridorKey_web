@@ -24,23 +24,28 @@ logger = logging.getLogger(__name__)
 
 # Rate limits per tier: (requests_per_minute, jobs_per_hour)
 # Set to (0, 0) for unlimited
+# Note: a single page load triggers 5-8 API calls, so limits must
+# accommodate normal browsing patterns (page nav, polling, uploads)
 TIER_LIMITS: dict[str, tuple[int, int]] = {
-    "pending": (10, 0),         # Very limited — can only check status
-    "member": (60, 10),         # Normal usage
-    "contributor": (120, 30),   # Higher limits for contributors
-    "org_admin": (120, 30),     # Same as contributor
-    "platform_admin": (0, 0),   # Unlimited
+    "pending": (30, 0),          # Limited — can check status and auth endpoints
+    "member": (300, 30),         # Normal usage (~5 pages/min with full refresh)
+    "contributor": (600, 60),    # Higher limits for power users
+    "org_admin": (600, 60),      # Same as contributor
+    "platform_admin": (0, 0),    # Unlimited
 }
 
 # Default for unknown tiers or unauthenticated
-DEFAULT_LIMIT = (30, 5)
+DEFAULT_LIMIT = (120, 10)
 
-# Paths that are never rate-limited
+# Paths that are never rate-limited (high-frequency or critical)
 EXEMPT_PREFIXES = (
     "/_app/",
     "/api/health",
     "/api/auth/status",
-    "/api/nodes/",  # Node agent polling
+    "/api/auth/me",
+    "/api/nodes/",       # Node agent polling (every 2s)
+    "/api/system/vram",  # VRAM polling (every 10s)
+    "/api/farm",         # Node list refresh on WS events
 )
 
 
