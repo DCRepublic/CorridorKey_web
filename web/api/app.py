@@ -197,12 +197,17 @@ def create_app() -> FastAPI:
         )
 
     # Middleware execution order (Starlette LIFO: last added = outermost):
-    # Request → GZip → Auth (injects user) → RateLimit (checks user tier) → Route
+    # Request → RateLimit → Auth → GZip → Route
+    # RateLimit must be outermost (added last) but needs user context from Auth.
+    # Since Auth runs after RateLimit in LIFO, we can't get user in RateLimit.
+    #
+    # Solution: RateLimit added FIRST (innermost), Auth second, GZip last.
+    # Execution: GZip → Auth (injects user) → RateLimit (reads user) → Route
     from .rate_limit import RateLimitMiddleware
 
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
-    app.add_middleware(AuthMiddleware)
-    app.add_middleware(RateLimitMiddleware)
+    app.add_middleware(RateLimitMiddleware)  # innermost — runs after auth
+    app.add_middleware(AuthMiddleware)  # middle — injects user context
+    app.add_middleware(GZipMiddleware, minimum_size=1000)  # outermost — compression
 
     if AUTH_ENABLED:
         logger.info("Auth enabled — JWT validation active on API routes")
