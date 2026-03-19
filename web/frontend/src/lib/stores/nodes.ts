@@ -34,6 +34,7 @@ export interface NodeInfo {
 	schedule: NodeSchedule;
 	accepted_types: string[];
 	org_id: string | null;
+	org_name?: string;
 	visibility: string;
 	can_manage?: boolean;
 	cpu_stats: {

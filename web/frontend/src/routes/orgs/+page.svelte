@@ -140,6 +140,13 @@
 
 	onMount(async () => {
 		await loadOrgs();
+		// Auto-select org if navigated from profile page
+		const preselected = localStorage.getItem('ck:selected_org');
+		if (preselected) {
+			localStorage.removeItem('ck:selected_org');
+			const org = orgs.find(o => o.org_id === preselected);
+			if (org) await selectOrg(org);
+		}
 		loading = false;
 	});
 </script>

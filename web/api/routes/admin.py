@@ -37,10 +37,17 @@ def _get_admin(request: Request) -> UserContext:
 
 @router.get("/users")
 def list_users(tier: str | None = None):
-    """List all users, optionally filtered by tier."""
+    """List all users, optionally filtered by tier. Includes org memberships."""
     store = get_user_store()
+    org_store = get_org_store()
     users = store.list_users(tier_filter=tier)
-    return {"users": [u.to_dict() for u in users]}
+    enriched = []
+    for u in users:
+        data = u.to_dict()
+        user_orgs = org_store.list_user_orgs(u.user_id)
+        data["orgs"] = [{"org_id": o.org_id, "name": o.name} for o in user_orgs]
+        enriched.append(data)
+    return {"users": enriched}
 
 
 @router.get("/users/pending")

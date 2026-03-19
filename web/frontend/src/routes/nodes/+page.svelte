@@ -527,7 +527,24 @@ uv run python -m web.node</pre>
 						<div class="node-header">
 							<span class="node-dot {statusClass(node.status)}"></span>
 							<span class="node-name">{node.name}</span>
-							<span class="node-host mono">{node.host}</span>
+							{#if node.org_name}
+								<span class="node-org mono">{node.org_name}</span>
+							{/if}
+							{#if node.host !== '***'}
+								<span class="node-host mono">{node.host}</span>
+							{/if}
+							{#if node.can_manage}
+								<button
+									class="visibility-badge mono {node.visibility}"
+									onclick={() => {
+										const next = node.visibility === 'shared' ? 'private' : 'shared';
+										api.nodes.setVisibility(node.node_id, next).then(refreshNodes);
+									}}
+									title="Click to toggle visibility"
+								>{node.visibility === 'shared' ? 'SHARED' : 'PRIVATE'}</button>
+							{:else if node.visibility === 'shared'}
+								<span class="visibility-badge mono shared">SHARED</span>
+							{/if}
 							{#if node.paused}
 								<span class="node-badge paused mono">PAUSED</span>
 							{:else if node.schedule.enabled && !node.schedule.is_active_now}
@@ -1510,6 +1527,17 @@ uv run python -m web.node</pre>
 		font-size: 10px;
 		color: var(--text-tertiary);
 	}
+
+	.node-org { font-size: 10px; color: var(--text-tertiary); letter-spacing: 0.06em; }
+
+	.visibility-badge {
+		font-size: 9px; letter-spacing: 0.06em; padding: 2px 6px;
+		border-radius: 3px; border: none; cursor: default;
+	}
+	button.visibility-badge { cursor: pointer; transition: all 0.15s; }
+	button.visibility-badge:hover { opacity: 0.8; }
+	.visibility-badge.shared { background: rgba(0, 154, 218, 0.12); color: var(--secondary); }
+	.visibility-badge.private { background: rgba(117, 117, 117, 0.12); color: var(--state-cancelled); }
 
 	/* Setup guide */
 	.setup-toggle {

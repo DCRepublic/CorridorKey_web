@@ -100,11 +100,20 @@ def list_managed_nodes(request: Request):
     all_nodes = registry.list_nodes()
     visible = [n for n in all_nodes if _user_can_see_node(user, n)]
     manageable = {n.node_id for n in all_nodes if _user_can_manage_node(user, n)}
+    # Build org name lookup (CRKY-72)
+    org_store = get_org_store()
+    org_names: dict[str, str] = {}
+    for n in visible:
+        if n.org_id and n.org_id not in org_names:
+            org = org_store.get_org(n.org_id)
+            org_names[n.org_id] = org.name if org else ""
+
     result = []
     for n in visible:
         data = n.to_dict()
         can_manage = n.node_id in manageable
         data["can_manage"] = can_manage
+        data["org_name"] = org_names.get(n.org_id or "", "")
         if not can_manage:
             # Redact infrastructure/operational details for read-only members.
             # Members see: name, status, GPU names, busy state — enough to

@@ -185,7 +185,7 @@
 			{:else}
 				<div class="org-list">
 					{#each orgs as org (org.org_id)}
-						<div class="org-card">
+						<a href="/orgs" class="org-card" onclick={() => localStorage.setItem('ck:selected_org', org.org_id)}>
 							<div class="org-info">
 								<span class="org-name">{org.name}</span>
 								{#if org.personal}
@@ -201,7 +201,7 @@
 									disabled={leavingOrg === org.org_id}
 								>LEAVE</button>
 							{/if}
-						</div>
+						</a>
 					{/each}
 				</div>
 			{/if}

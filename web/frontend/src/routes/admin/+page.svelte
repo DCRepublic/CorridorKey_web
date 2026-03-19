@@ -10,6 +10,7 @@
 		signed_up_at: number;
 		approved_at: number;
 		approved_by: string;
+		orgs?: { org_id: string; name: string }[];
 	}
 
 	interface OrgRecord {
@@ -268,6 +269,7 @@
 							<tr>
 								<th class="mono">EMAIL</th>
 								<th class="mono">TIER</th>
+								<th class="mono">ORGS</th>
 								<th class="mono">SIGNED UP</th>
 								<th class="mono">ACTIONS</th>
 							</tr>
@@ -281,6 +283,15 @@
 									</td>
 									<td>
 										<span class="tier-badge mono" data-tier={u.tier}>{u.tier}</span>
+									</td>
+									<td class="mono org-cell">
+										{#if u.orgs && u.orgs.length > 0}
+											{#each u.orgs as o}
+												<span class="org-chip">{o.name}</span>
+											{/each}
+										{:else}
+											<span class="no-org">—</span>
+										{/if}
 									</td>
 									<td class="mono">{formatDate(u.signed_up_at)}</td>
 									<td>
@@ -585,6 +596,13 @@
 		background: rgba(117, 117, 117, 0.12);
 		color: var(--state-cancelled);
 	}
+
+	.org-cell { display: flex; flex-wrap: wrap; gap: 3px; }
+	.org-chip {
+		font-size: 10px; padding: 1px 6px; border-radius: 3px;
+		background: var(--surface-4); color: var(--text-secondary);
+	}
+	.no-org { color: var(--text-tertiary); }
 
 	.form-error {
 		padding: var(--sp-2) var(--sp-3);
