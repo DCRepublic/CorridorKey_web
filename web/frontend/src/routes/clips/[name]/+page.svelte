@@ -288,32 +288,32 @@
 			</div>
 
 			<div class="detail-sidebar">
-				{#if clip?.has_outputs}
-					<!-- Post-inference: download is hero action -->
-					<div class="action-buttons">
-						<a href={`/api/preview/${encodeURIComponent(clip.name)}/processed/download?token=${encodeURIComponent(localStorage.getItem('ck:auth_token') || '')}`} class="btn btn-hero download-hero">
-							<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M4 7l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-							Download Processed (EXR)
-						</a>
+				<InferenceForm bind:params bind:outputConfig />
+
+				<div class="action-buttons">
+					{#if clip?.has_outputs}
+						<!-- Post-inference: download + reprocess side by side -->
+						<div class="hero-row">
+							<a href={`/api/preview/${encodeURIComponent(clip.name)}/processed/download?token=${encodeURIComponent(localStorage.getItem('ck:auth_token') || '')}`} class="btn btn-hero download-hero">
+								<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2v8M4 7l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 12h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+								Download EXR
+							</a>
+							{#if canRunPipeline}
+								<button class="btn btn-muted" onclick={runPipeline} disabled={submitting}>
+									Re-run Pipeline
+								</button>
+							{/if}
+						</div>
 						<div class="download-passes mono">
 							<a href={`/api/preview/${encodeURIComponent(clip.name)}/fg/download?token=${encodeURIComponent(localStorage.getItem('ck:auth_token') || '')}`} class="pass-dl">FG</a>
 							<a href={`/api/preview/${encodeURIComponent(clip.name)}/matte/download?token=${encodeURIComponent(localStorage.getItem('ck:auth_token') || '')}`} class="pass-dl">Matte</a>
 							<a href={`/api/preview/${encodeURIComponent(clip.name)}/comp/download?token=${encodeURIComponent(localStorage.getItem('ck:auth_token') || '')}`} class="pass-dl">Comp</a>
 						</div>
-						<div class="divider-label mono">REPROCESS</div>
-					</div>
-				{/if}
-
-				<InferenceForm bind:params bind:outputConfig />
-
-				<div class="action-buttons">
-					{#if canRunPipeline}
-						<button class="btn {clip?.has_outputs ? 'btn-secondary' : 'btn-hero'}" onclick={runPipeline} disabled={submitting}>
-							{clip?.has_outputs ? 'Re-run Full Pipeline' : 'Run Full Pipeline'}
+					{:else if canRunPipeline}
+						<button class="btn btn-hero" onclick={runPipeline} disabled={submitting}>
+							Run Full Pipeline
 						</button>
-						{#if !clip?.has_outputs}
-							<div class="divider-label mono">OR RUN INDIVIDUAL STEPS</div>
-						{/if}
+						<div class="divider-label mono">OR RUN INDIVIDUAL STEPS</div>
 					{/if}
 
 					{#if Object.keys(costEstimates).length > 0 && clip && clip.frame_count > 0}
@@ -629,10 +629,25 @@
 	.est-row { color: var(--text-secondary); padding-left: var(--sp-2); }
 	.est-total { color: var(--accent); font-weight: 600; padding-top: 2px; border-top: 1px solid var(--border); }
 
+	.hero-row {
+		display: flex; gap: var(--sp-2);
+	}
+	.hero-row .btn-hero { flex: 1; }
+	.hero-row .btn-muted { flex-shrink: 0; }
+
 	.download-hero {
 		display: flex; align-items: center; gap: var(--sp-2); justify-content: center;
 		text-decoration: none;
 	}
+
+	.btn-muted {
+		padding: 10px 14px; font-size: 12px; font-weight: 500;
+		background: var(--surface-3); color: var(--text-secondary);
+		border: 1px solid var(--border); border-radius: var(--radius-md);
+		cursor: pointer; transition: all 0.15s;
+	}
+	.btn-muted:hover:not(:disabled) { color: var(--text-primary); border-color: var(--text-tertiary); }
+	.btn-muted:disabled { opacity: 0.5; cursor: not-allowed; }
 	.download-passes {
 		display: flex; gap: var(--sp-2); justify-content: center;
 	}
