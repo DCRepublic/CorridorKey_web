@@ -171,6 +171,12 @@ def create_app() -> FastAPI:
             "to the same value as your Supabase JWT_SECRET."
         )
 
+    # Rate limiting (CRKY-11) — added before auth middleware so auth
+    # runs first (Starlette LIFO: last added = outermost = runs first)
+    from .rate_limit import RateLimitMiddleware
+
+    app.add_middleware(RateLimitMiddleware)
+
     app.add_middleware(AuthMiddleware)
     if AUTH_ENABLED:
         logger.info("Auth enabled — JWT validation active on API routes")
