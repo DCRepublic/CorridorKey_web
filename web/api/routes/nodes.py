@@ -192,14 +192,15 @@ def node_heartbeat(node_id: str, req: NodeHeartbeatRequest):
 
             now = time.time()
             last = node.last_heartbeat
-            # Credit the time since last heartbeat, capped at 2x heartbeat interval
-            # to avoid crediting huge gaps (e.g., after a network outage)
-            delta = min(now - last, 30.0)  # max 30s per heartbeat
+            delta = min(now - last, 30.0)
             if delta > 0:
                 gpu_count = max(1, len(node.gpus))
                 from ..gpu_credits import add_contributed
 
                 add_contributed(node.org_id, delta * gpu_count)
+                logger.info(f"Credit: +{delta:.1f}s x{gpu_count} GPU by {node_id} -> org {node.org_id}")
+        elif req.status == "busy" and not node.org_id:
+            logger.info(f"Credit: node {node_id} is busy but has no org_id — credits not tracked")
         manager.send_node_update(node.to_dict())
     return {"status": "ok"}
 

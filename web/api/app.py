@@ -38,7 +38,14 @@ def _track_consumed_credits(queue) -> None:
             return
         # Most recent completed job
         job = history[-1]
-        if job.status.value != "completed" or not job.org_id or not job.started_at:
+        if job.status.value != "completed":
+            logger.info(f"Credit tracking: job {job.id} status={job.status.value}, skipping")
+            return
+        if not job.org_id:
+            logger.info(f"Credit tracking: job {job.id} has no org_id, skipping")
+            return
+        if not job.started_at:
+            logger.info(f"Credit tracking: job {job.id} has no started_at, skipping")
             return
         elapsed = _t.time() - job.started_at
         if elapsed <= 0:
@@ -46,7 +53,7 @@ def _track_consumed_credits(queue) -> None:
         from .gpu_credits import add_consumed
 
         add_consumed(job.org_id, elapsed)
-        logger.debug(f"Tracked {elapsed:.1f}s consumed GPU time for org {job.org_id}")
+        logger.info(f"Credit tracking: {elapsed:.1f}s consumed by org {job.org_id} (job {job.id})")
     except Exception as e:
         logger.debug(f"Credit tracking failed: {e}")
 
