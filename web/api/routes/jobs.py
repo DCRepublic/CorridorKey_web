@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from backend.job_queue import GPUJob, JobType
 
 from ..auth import get_current_user
+from ..credit_guard import check_credit_balance
 from ..deps import get_queue, get_service
 from ..nodes import registry
 from ..schemas import (
@@ -29,9 +30,14 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(requ
 
 
 def _stamp_job(job: GPUJob, request: Request | None) -> GPUJob:
-    """Set submitted_by and org_id from the authenticated user (CRKY-66)."""
+    """Set submitted_by and org_id from the authenticated user (CRKY-66).
+
+    Also checks GPU credit balance before allowing submission (CRKY-37).
+    """
     if request is None:
         return job
+    # Check credit balance before allowing job (CRKY-37)
+    check_credit_balance(request)
     user = get_current_user(request)
     if user:
         job.submitted_by = user.user_id
