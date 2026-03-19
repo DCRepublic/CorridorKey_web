@@ -101,7 +101,9 @@
 	}
 
 	async function revokeToken(preview: string) {
-		await fetch(`/api/farm/tokens/${preview}`, {
+		// Strip the trailing "..." from token_preview to get the 8-char prefix
+		const prefix = preview.replace(/\.+$/, '');
+		await fetch(`/api/farm/tokens/${encodeURIComponent(prefix)}`, {
 			method: 'DELETE',
 			headers: { 'Authorization': `Bearer ${localStorage.getItem('ck:auth_token')}` }
 		});
@@ -319,7 +321,7 @@
 					<h3 class="step-title mono">1. GENERATE A NODE TOKEN</h3>
 					<p class="step-desc">Each node needs its own auth token. Generate one for the machine you're adding.</p>
 					<div class="token-gen-row">
-						{#if userOrgs.length > 1}
+						{#if userOrgs.length > 0}
 							<select class="setup-select mono" bind:value={selectedOrgId}>
 								{#each userOrgs as org}
 									<option value={org.org_id}>{org.name}</option>

@@ -242,7 +242,7 @@ class GenerateTokenRequest(BaseModel):
 
 @router.post("/tokens")
 def generate_node_token(req: GenerateTokenRequest, request: Request):
-    """Generate a per-node auth token for an org. Requires org admin."""
+    """Generate a per-node auth token. Org admins for any org, members for their personal org."""
     user = _get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -250,7 +250,9 @@ def generate_node_token(req: GenerateTokenRequest, request: Request):
     org = org_store.get_org(req.org_id)
     if not org:
         raise HTTPException(status_code=404, detail="Org not found")
-    if not user.is_admin and not org_store.is_org_admin(req.org_id, user.user_id):
+    # Allow: platform admin, org admin/owner, or owner of personal org
+    is_personal_owner = org.personal and org.owner_id == user.user_id
+    if not user.is_admin and not org_store.is_org_admin(req.org_id, user.user_id) and not is_personal_owner:
         raise HTTPException(status_code=403, detail="Only org admins can generate node tokens")
     token_store = get_node_token_store()
     token = token_store.generate(org_id=req.org_id, label=req.label, created_by=user.user_id)
@@ -273,12 +275,12 @@ def list_node_tokens(request: Request, org_id: str | None = None):
             raise HTTPException(status_code=403, detail="Only org admins can view tokens")
         tokens = token_store.list_for_org(org_id)
     else:
-        # List tokens for all orgs the user is admin of
+        # List tokens for orgs the user can manage (admin of, or personal owner)
         org_store = get_org_store()
         user_orgs = org_store.list_user_orgs(user.user_id)
         tokens = []
         for o in user_orgs:
-            if org_store.is_org_admin(o.org_id, user.user_id):
+            if org_store.is_org_admin(o.org_id, user.user_id) or (o.personal and o.owner_id == user.user_id):
                 tokens.extend(token_store.list_for_org(o.org_id))
     return {"tokens": [t.to_safe_dict() for t in tokens]}
 
@@ -295,10 +297,12 @@ def revoke_node_token(token_preview: str, request: Request):
     target = next((t for t in all_tokens if t.token[:8] == token_preview), None)
     if not target:
         raise HTTPException(status_code=404, detail="Token not found")
-    # Check org admin permission
+    # Check permission: org admin, platform admin, or personal org owner
     if not user.is_admin:
         org_store = get_org_store()
-        if not org_store.is_org_admin(target.org_id, user.user_id):
+        org = org_store.get_org(target.org_id)
+        is_personal_owner = org and org.personal and org.owner_id == user.user_id
+        if not org_store.is_org_admin(target.org_id, user.user_id) and not is_personal_owner:
             raise HTTPException(status_code=403, detail="Only org admins can revoke tokens")
     token_store.revoke(target.token)
     return {"status": "revoked"}
