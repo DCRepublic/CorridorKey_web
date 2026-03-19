@@ -111,8 +111,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         path = request.url.path
 
-        # Skip exempt paths
+        # Skip exempt paths and non-API GET requests (SPA pages)
         if any(path.startswith(p) for p in EXEMPT_PREFIXES):
+            return await call_next(request)
+        if not path.startswith("/api/") and request.method == "GET":
             return await call_next(request)
 
         key, tier = _get_rate_key(request)
