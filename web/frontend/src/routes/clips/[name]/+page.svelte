@@ -18,7 +18,7 @@
 
 	let params = $state<InferenceParams>({ ...$defaultParams });
 	let outputConfig = $state<OutputConfig>({ ...$defaultOutputConfig });
-	let costEstimate = $state<{ estimated_gpu_minutes: number; estimated_wall_clock_seconds: number } | null>(null);
+	let costEstimates = $state<Record<string, { estimated_gpu_minutes: number; estimated_wall_clock_seconds: number }>>({});
 
 	let clipName = $derived(decodeURIComponent(page.params.name));
 
@@ -51,12 +51,17 @@
 		error = null;
 		try {
 			clip = await api.clips.get(clipName);
-			// Fetch cost estimate if clip has frames
+			// Fetch cost estimates for all job types
 			if (clip.frame_count > 0) {
-				try {
-					const est = await api.jobs.estimate('inference', clip.frame_count, $autoShard ? 0 : 1);
-					costEstimate = est;
-				} catch { /* ignore */ }
+				const types = ['inference', 'gvm_alpha', 'videomama_alpha'];
+				const shards = $autoShard ? 0 : 1;
+				const results: Record<string, any> = {};
+				await Promise.all(types.map(async (t) => {
+					try {
+						results[t] = await api.jobs.estimate(t, clip.frame_count, shards);
+					} catch { /* ignore */ }
+				}));
+				costEstimates = results;
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -293,11 +298,19 @@
 						<div class="divider-label mono">OR RUN INDIVIDUAL STEPS</div>
 					{/if}
 
-					{#if costEstimate && clip && clip.frame_count > 0}
+					{#if Object.keys(costEstimates).length > 0 && clip && clip.frame_count > 0}
 						<div class="cost-estimate mono">
-							<span class="est-label">Estimated cost:</span>
-							<span class="est-value">~{costEstimate.estimated_gpu_minutes} GPU-min</span>
-							<span class="est-detail">({clip.frame_count} frames, ~{Math.round(costEstimate.estimated_wall_clock_seconds)}s wall clock)</span>
+							<span class="est-label">Estimated GPU cost ({clip.frame_count} frames):</span>
+							{#if costEstimates.inference}
+								<span class="est-row">Inference: ~{costEstimates.inference.estimated_gpu_minutes} min</span>
+							{/if}
+							{#if costEstimates.gvm_alpha}
+								<span class="est-row">GVM Alpha: ~{costEstimates.gvm_alpha.estimated_gpu_minutes} min</span>
+							{/if}
+							{#if costEstimates.inference && costEstimates.gvm_alpha}
+								{@const total = costEstimates.inference.estimated_gpu_minutes + costEstimates.gvm_alpha.estimated_gpu_minutes}
+								<span class="est-total">Full pipeline: ~{total.toFixed(1)} GPU-min</span>
+							{/if}
 						</div>
 					{/if}
 
@@ -586,15 +599,15 @@
 
 	.cost-estimate {
 		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
+		flex-direction: column;
+		gap: 3px;
 		padding: var(--sp-2) var(--sp-3);
 		background: var(--surface-3);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		font-size: 11px;
 	}
-	.est-label { color: var(--text-tertiary); }
-	.est-value { color: var(--accent); font-weight: 600; }
-	.est-detail { color: var(--text-tertiary); }
+	.est-label { color: var(--text-tertiary); margin-bottom: 2px; }
+	.est-row { color: var(--text-secondary); padding-left: var(--sp-2); }
+	.est-total { color: var(--accent); font-weight: 600; padding-top: 2px; border-top: 1px solid var(--border); }
 </style>

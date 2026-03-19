@@ -106,7 +106,7 @@ def estimate_job_cost(job_type: str = "inference", frame_count: int = 0, num_sha
         # Default estimates per job type (rough, based on typical hardware)
         defaults = {
             "inference": 0.5,  # ~0.5s per frame on RTX 4090
-            "gvm_alpha": 2.0,
+            "gvm_alpha": 2.5,  # ~2.5s per frame (heavy diffusion model)
             "videomama_alpha": 1.5,
             "video_extract": 0.05,
             "video_stitch": 0.02,

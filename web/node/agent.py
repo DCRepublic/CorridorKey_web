@@ -137,8 +137,14 @@ class NodeAgent:
 
     def _heartbeat(self) -> bool:
         try:
-            gpu_ready = self._check_gpu_ready()
-            status = "online" if gpu_ready else "busy"
+            # Report busy if any GPU is processing (includes download phase)
+            with self._busy_lock:
+                any_busy = len(self._busy_gpus) > 0
+            if any_busy:
+                status = "busy"
+            else:
+                gpu_ready = self._check_gpu_ready()
+                status = "online" if gpu_ready else "busy"
             new_logs = log_buffer.get_new_lines()
             cpu = get_cpu_stats()
             r = self._api(
