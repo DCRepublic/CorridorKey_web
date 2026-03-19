@@ -16,6 +16,7 @@
 		org_id: string;
 		role: string;
 		joined_at: number;
+		email: string;
 	}
 
 	let orgs = $state<OrgInfo[]>([]);
@@ -30,7 +31,7 @@
 	let membersLoading = $state(false);
 
 	// Add member
-	let addMemberUserId = $state('');
+	let addMemberEmail = $state('');
 	let addMemberRole = $state('member');
 	let addMemberError = $state('');
 
@@ -86,14 +87,14 @@
 	}
 
 	async function addMember() {
-		if (!selectedOrg || !addMemberUserId.trim()) return;
+		if (!selectedOrg || !addMemberEmail.trim()) return;
 		addMemberError = '';
 		try {
 			await authFetch(`/api/orgs/${selectedOrg.org_id}/members`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: addMemberUserId.trim(), role: addMemberRole })
+				body: JSON.stringify({ email: addMemberEmail.trim(), role: addMemberRole })
 			});
-			addMemberUserId = '';
+			addMemberEmail = '';
 			await selectOrg(selectedOrg);
 		} catch (e) {
 			addMemberError = e instanceof Error ? e.message : 'Failed to add member';
@@ -170,7 +171,7 @@
 					<div class="member-list">
 						{#each members as m (m.user_id)}
 							<div class="member-row">
-								<span class="member-id mono">{m.user_id.substring(0, 20)}...</span>
+								<span class="member-id">{m.email || m.user_id.substring(0, 20) + '...'}</span>
 								<span class="role-badge mono" data-role={m.role}>{m.role.toUpperCase()}</span>
 								{#if isOwner(selectedOrg) && m.role !== 'owner'}
 									<select
@@ -197,10 +198,10 @@
 							{/if}
 							<div class="add-member-row">
 								<input
-									type="text"
-									class="input mono"
-									bind:value={addMemberUserId}
-									placeholder="User ID"
+									type="email"
+									class="input"
+									bind:value={addMemberEmail}
+									placeholder="user@email.com"
 								/>
 								<select class="role-select mono" bind:value={addMemberRole}>
 									<option value="member">member</option>

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from ..auth import AUTH_ENABLED, UserContext, get_current_user
 from ..orgs import get_org_store
 from ..tier_guard import require_authenticated, require_member
+from ..users import get_user_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/orgs", tags=["orgs"])
@@ -25,7 +26,8 @@ class CreateOrgRequest(BaseModel):
 
 
 class AddMemberRequest(BaseModel):
-    user_id: str
+    user_id: str = ""
+    email: str = ""  # Can add by email instead of user_id
     role: str = "member"
 
 
@@ -110,7 +112,15 @@ def list_members(org_id: str, request: Request):
     if not user.is_admin and not store.is_member(org_id, user.user_id):
         raise HTTPException(status_code=403, detail="Not a member of this org")
     members = store.list_members(org_id)
-    return {"members": [m.to_dict() for m in members]}
+    # Enrich with emails from user store (CRKY-68)
+    user_store = get_user_store()
+    enriched = []
+    for m in members:
+        data = m.to_dict()
+        user_record = user_store.get_user(m.user_id)
+        data["email"] = user_record.email if user_record else ""
+        enriched.append(data)
+    return {"members": enriched}
 
 
 @router.post("/{org_id}/members", dependencies=[Depends(require_authenticated)])
@@ -124,7 +134,17 @@ def add_member(org_id: str, req: AddMemberRequest, request: Request):
         raise HTTPException(status_code=403, detail="Only org admins can add members")
     if req.role not in ("member", "admin"):
         raise HTTPException(status_code=400, detail="Role must be 'member' or 'admin'")
-    member = store.add_member(org_id, req.user_id, role=req.role)
+    # Resolve email to user_id if provided (CRKY-68)
+    target_user_id = req.user_id
+    if not target_user_id and req.email:
+        user_store = get_user_store()
+        found = user_store.get_user_by_email(req.email)
+        if not found:
+            raise HTTPException(status_code=404, detail=f"No user found with email '{req.email}'")
+        target_user_id = found.user_id
+    if not target_user_id:
+        raise HTTPException(status_code=400, detail="Either user_id or email is required")
+    member = store.add_member(org_id, target_user_id, role=req.role)
     return member.to_dict()
 
 
