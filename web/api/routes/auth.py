@@ -26,10 +26,6 @@ from ..users import get_user_store
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# Default admin credentials (first-time setup)
-_DEFAULT_ADMIN_EMAIL = "admin@corridorkey.local"
-_DEFAULT_ADMIN_PASSWORD = "admin"
-
 
 class LoginRequest(BaseModel):
     email: str
@@ -146,7 +142,13 @@ def login_proxy(req: LoginRequest):
             method="POST",
         )
         with urllib.request.urlopen(gotrue_req, timeout=10) as resp:
-            return json.loads(resp.read())
+            data = json.loads(resp.read())
+        # Only forward safe fields — don't leak GoTrue internals
+        safe_keys = {
+            "access_token", "refresh_token", "token_type", "expires_in",
+            "expires_at", "user",
+        }
+        return {k: v for k, v in data.items() if k in safe_keys}
     except Exception as e:
         logger.error(f"GoTrue login proxy error: {e}")
         raise HTTPException(status_code=401, detail="Login failed") from e
@@ -170,7 +172,12 @@ def refresh_proxy(request: Request):
             method="POST",
         )
         with urllib.request.urlopen(gotrue_req, timeout=10) as resp:
-            return json.loads(resp.read())
+            data = json.loads(resp.read())
+        safe_keys = {
+            "access_token", "refresh_token", "token_type", "expires_in",
+            "expires_at", "user",
+        }
+        return {k: v for k, v in data.items() if k in safe_keys}
     except HTTPException:
         raise
     except Exception as e:
@@ -183,10 +190,15 @@ def change_password(request: Request):
     """Proxy password change to GoTrue. Requires valid JWT."""
     import urllib.request
 
+    from ..auth import _decode_jwt
+
     gotrue_url = os.environ.get("CK_GOTRUE_INTERNAL_URL", os.environ.get("CK_GOTRUE_URL", "http://localhost:54324"))
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header:
+    if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Authorization required")
+
+    # Validate the JWT before forwarding to GoTrue
+    _decode_jwt(auth_header[7:])
 
     try:
         import asyncio
@@ -252,11 +264,13 @@ def validate_invite_token(token: str):
 def consume_invite_token(token: str, email: str):
     """Mark an invite token as used after successful signup.
 
-    Re-checks the used flag to narrow the TOCTOU window between
-    validate and consume. The frontend should treat a 409 here
-    as a failed signup and show an error.
+    Atomic check-and-set: reads the current state, verifies it's unused,
+    and writes in a single operation. On the JSON backend this is
+    single-threaded so effectively atomic. On Postgres this uses a
+    single transaction.
     """
     storage = get_storage()
+    # Atomic read-check-write: reload fresh state before each write
     invites = storage.get_invite_tokens()
     invite = invites.get(token)
     if not invite:

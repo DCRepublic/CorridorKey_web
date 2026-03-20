@@ -305,13 +305,17 @@ def create_org_webhook(org_id: str, req: WebhookRequest, request: Request):
 
 @router.delete("/{org_id}/webhooks/{hook_id}", dependencies=[Depends(require_authenticated)])
 def delete_org_webhook(org_id: str, hook_id: str, request: Request):
-    """Delete a webhook. Org admin only."""
+    """Delete a webhook. Org admin only. Verifies hook belongs to the specified org."""
     user = _get_user(request)
     store = get_org_store()
     if not user.is_admin and not store.is_org_admin(org_id, user.user_id):
         raise HTTPException(status_code=403, detail="Only org admins can delete webhooks")
-    from ..webhooks import delete_webhook
+    from ..webhooks import delete_webhook, list_webhooks
 
+    # Verify the webhook belongs to this org (prevent cross-org deletion)
+    org_hooks = {h.id for h in list_webhooks(org_id)}
+    if hook_id not in org_hooks:
+        raise HTTPException(status_code=404, detail="Webhook not found in this org")
     if not delete_webhook(hook_id):
         raise HTTPException(status_code=404, detail="Webhook not found")
     return {"status": "deleted"}

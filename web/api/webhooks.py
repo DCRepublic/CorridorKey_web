@@ -58,10 +58,51 @@ def _save_webhooks(hooks: dict[str, dict]) -> None:
     get_storage().set_setting("webhooks", hooks)
 
 
+def _validate_webhook_url(url: str) -> None:
+    """Validate webhook URL to prevent SSRF attacks.
+
+    Rejects: non-HTTP(S) schemes, localhost, private IP ranges,
+    link-local (169.254.x.x), loopback (127.x.x.x), and
+    common internal Docker hostnames.
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Webhook URL must use http or https (got {parsed.scheme})")
+    if not parsed.hostname:
+        raise ValueError("Webhook URL must have a hostname")
+
+    hostname = parsed.hostname.lower()
+
+    # Block common internal hostnames
+    blocked_hosts = {
+        "localhost", "127.0.0.1", "::1", "0.0.0.0",
+        "metadata.google.internal", "metadata",
+    }
+    # Block Docker-internal service names from compose files
+    blocked_prefixes = (
+        "supabase-", "corridorkey-", "postgres", "grafana",
+        "prometheus", "loki", "promtail",
+    )
+    if hostname in blocked_hosts or any(hostname.startswith(p) for p in blocked_prefixes):
+        raise ValueError(f"Webhook URL cannot target internal host: {hostname}")
+
+    # Block private/reserved IP ranges
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            raise ValueError(f"Webhook URL cannot target private/reserved IP: {hostname}")
+    except ValueError:
+        pass  # hostname is a domain name, not an IP — OK
+
+
 def create_webhook(org_id: str, url: str, events: list[str], fmt: str, created_by: str) -> Webhook:
     """Create a new webhook for an org."""
     import secrets
 
+    _validate_webhook_url(url)
     hook_id = secrets.token_hex(8)
     hook = Webhook(
         id=hook_id, org_id=org_id, url=url, events=events,

@@ -24,7 +24,7 @@ from ..schemas import (
     PipelineJobRequest,
     VideoMaMaJobRequest,
 )
-from ..tier_guard import require_member
+from ..tier_guard import require_admin, require_member
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_member)])
 
@@ -317,24 +317,28 @@ def submit_sharded_inference(req: ShardedInferenceRequest, request: Request):
 
 
 @router.get("/shard-group/{group_id}")
-def get_shard_group_progress(group_id: str):
+def get_shard_group_progress(group_id: str, request: Request):
     """Get combined progress for all shards in a group."""
     queue = get_queue()
+    # Verify the requesting user owns at least one shard in the group
+    _check_shard_group_ownership(queue, group_id, request)
     return queue.shard_group_progress(group_id)
 
 
 @router.delete("/shard-group/{group_id}")
-def cancel_shard_group(group_id: str):
-    """Cancel all shards in a group."""
+def cancel_shard_group(group_id: str, request: Request):
+    """Cancel all shards in a group. Only the submitter or platform admin."""
     queue = get_queue()
+    _check_shard_group_ownership(queue, group_id, request)
     count = queue.cancel_shard_group(group_id)
     return {"status": "cancelled", "shard_group": group_id, "cancelled": count}
 
 
 @router.post("/shard-group/{group_id}/retry")
-def retry_shard_group(group_id: str):
-    """Re-submit failed shards from a group."""
+def retry_shard_group(group_id: str, request: Request):
+    """Re-submit failed shards from a group. Only the submitter or platform admin."""
     queue = get_queue()
+    _check_shard_group_ownership(queue, group_id, request)
     new_jobs = queue.retry_failed_shards(group_id)
     return {
         "status": "retried",
@@ -468,6 +472,23 @@ def _check_job_ownership(job: GPUJob, request: Request) -> None:
         raise HTTPException(status_code=403, detail="You can only manage your own jobs")
 
 
+def _check_shard_group_ownership(queue, group_id: str, request: Request) -> None:
+    """Verify the requesting user owns the shard group or is a platform admin."""
+    user = get_current_user(request)
+    if not user:
+        return  # Auth disabled
+    if user.is_admin:
+        return
+    # Find any job in the shard group to check ownership
+    all_jobs = list(queue.queue_snapshot) + queue.running_jobs + list(queue.history_snapshot)
+    group_jobs = [j for j in all_jobs if j.shard_group == group_id]
+    if not group_jobs:
+        raise HTTPException(status_code=404, detail=f"Shard group '{group_id}' not found")
+    # Check the submitter of the first job
+    if group_jobs[0].submitted_by and group_jobs[0].submitted_by != user.user_id:
+        raise HTTPException(status_code=403, detail="You can only manage your own shard groups")
+
+
 @router.delete("/{job_id}", summary="Cancel a job")
 def cancel_job(job_id: str, request: Request):
     """Cancel a running or queued job. Only the submitter or platform admin can cancel."""
@@ -508,12 +529,13 @@ def set_job_priority(job_id: str, priority: int, request: Request):
 
 
 @router.get("/{job_id}/log")
-def get_job_log(job_id: str):
-    """Get detailed error/log info for a job."""
+def get_job_log(job_id: str, request: Request):
+    """Get detailed error/log info for a job. Only the submitter or platform admin."""
     queue = get_queue()
     job = queue.find_job_by_id(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    _check_job_ownership(job, request)
     return {
         "id": job.id,
         "job_type": job.job_type.value,
@@ -526,9 +548,9 @@ def get_job_log(job_id: str):
     }
 
 
-@router.delete("", summary="Cancel all jobs")
+@router.delete("", summary="Cancel all jobs", dependencies=[Depends(require_admin)])
 def cancel_all():
-    """Cancel all running and queued jobs."""
+    """Cancel all running and queued jobs. Requires platform_admin."""
     queue = get_queue()
     queue.cancel_all()
     return {"status": "all_cancelled"}

@@ -266,9 +266,9 @@ def download_weight_file(name: str, file_path: str):
     if root is None:
         raise HTTPException(status_code=400, detail=f"Unknown weight set: {name}")
 
-    # Prevent path traversal
-    resolved = os.path.normpath(os.path.join(root, file_path))
-    if not resolved.startswith(os.path.normpath(root)):
+    # Prevent path traversal — use realpath to resolve symlinks
+    resolved = os.path.realpath(os.path.join(root, file_path))
+    if not resolved.startswith(os.path.realpath(root) + os.sep):
         raise HTTPException(status_code=400, detail="Invalid path")
 
     if not os.path.isfile(resolved):

@@ -12,7 +12,7 @@ import zipfile
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 
 from backend.frame_io import read_image_frame
@@ -170,7 +170,7 @@ def _cache_key(clip_root: str, pass_name: str) -> str:
 
 
 @router.get("/{clip_name}/{pass_name}/video/progress")
-def get_video_progress(clip_name: str, pass_name: str, request: Request, fps: int = 24):
+def get_video_progress(clip_name: str, pass_name: str, request: Request, fps: int = Query(24, ge=1, le=120)):
     """Check video encode progress. Returns status, current frame, total frames."""
     clip_root = _find_clip_root(clip_name, resolve_clips_dir(request))
     if clip_root is None:
@@ -191,7 +191,7 @@ def get_video_progress(clip_name: str, pass_name: str, request: Request, fps: in
 
 
 @router.get("/{clip_name}/{pass_name}/video")
-def get_preview_video(clip_name: str, pass_name: str, request: Request, fps: int = 24):
+def get_preview_video(clip_name: str, pass_name: str, request: Request, fps: int = Query(24, ge=1, le=120)):
     """Stitch frames into an MP4 for smooth browser playback. Cached."""
     if not _ffmpeg_available():
         raise HTTPException(status_code=503, detail="ffmpeg not available — cannot generate preview video")

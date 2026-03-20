@@ -54,32 +54,36 @@ class OutputConfigSchema(BaseModel):
     processed_format: str = "exr"
 
 
+# Maximum clip names per request — prevents DoS via massive job submissions
+_MAX_CLIPS = 100
+
+
 class ExtractJobRequest(BaseModel):
-    clip_names: list[str]
+    clip_names: list[str] = Field(max_length=_MAX_CLIPS)
 
 
 class PipelineJobRequest(BaseModel):
     """Full pipeline: extract (if needed) → GVM alpha → inference."""
 
-    clip_names: list[str]
+    clip_names: list[str] = Field(max_length=_MAX_CLIPS)
     alpha_method: str = "gvm"  # "gvm" or "videomama"
     params: InferenceParamsSchema = InferenceParamsSchema()
     output_config: OutputConfigSchema = OutputConfigSchema()
 
 
 class InferenceJobRequest(BaseModel):
-    clip_names: list[str]
+    clip_names: list[str] = Field(max_length=_MAX_CLIPS)
     params: InferenceParamsSchema = InferenceParamsSchema()
     output_config: OutputConfigSchema = OutputConfigSchema()
     frame_range: tuple[int, int] | None = None
 
 
 class GVMJobRequest(BaseModel):
-    clip_names: list[str]
+    clip_names: list[str] = Field(max_length=_MAX_CLIPS)
 
 
 class VideoMaMaJobRequest(BaseModel):
-    clip_names: list[str]
+    clip_names: list[str] = Field(max_length=_MAX_CLIPS)
     chunk_size: int = 50
 
 

@@ -354,6 +354,9 @@ def report_job_progress(node_id: str, job_id: str, current: int, total: int):
     queue = get_queue()
     job = queue.find_job_by_id(job_id)
     if job:
+        # Verify this node is assigned to the job
+        if job.claimed_by and job.claimed_by != node_id:
+            raise HTTPException(status_code=403, detail="Job is assigned to a different node")
         job.current_frame = current
         job.total_frames = total
     oid = job.org_id if job else None
@@ -368,6 +371,10 @@ def report_job_result(node_id: str, req: JobResultRequest):
     job = queue.find_job_by_id(req.job_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"Job '{req.job_id}' not found")
+
+    # Verify this node is the one assigned to the job (prevents credit fraud)
+    if job.claimed_by and job.claimed_by != node_id:
+        raise HTTPException(status_code=403, detail="Job is assigned to a different node")
 
     oid = job.org_id
     if req.status == "completed":
