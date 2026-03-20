@@ -75,7 +75,7 @@ def approve_user(user_id: str, request: Request):
 
     # Create personal org and grant starter credits
     org_store = get_org_store()
-    personal_org = org_store.ensure_personal_org(user_id, user.email)
+    personal_org = org_store.ensure_personal_org(user_id, user.email, display_name=user.name)
 
     from ..gpu_credits import STARTER_CREDITS, add_contributed
 
@@ -122,7 +122,7 @@ def set_user_tier(user_id: str, req: SetTierRequest, request: Request):
 
     # Ensure personal org + starter credits when promoting from pending
     if old_tier == "pending" and req.tier != "pending":
-        personal_org = get_org_store().ensure_personal_org(user_id, user.email)
+        personal_org = get_org_store().ensure_personal_org(user_id, user.email, display_name=user.name)
         from ..gpu_credits import STARTER_CREDITS, add_contributed
 
         if STARTER_CREDITS > 0:
@@ -167,11 +167,14 @@ class GrantCreditsRequest(BaseModel):
 
 @router.post("/credits/grant")
 def grant_credits(req: GrantCreditsRequest, request: Request):
-    """Grant GPU credit hours to an org. Platform admin only."""
+    """Grant or revoke GPU credit hours for an org. Platform admin only.
+
+    Positive hours = grant credits. Negative hours = revoke credits.
+    """
     from ..gpu_credits import add_contributed
 
-    if req.hours <= 0:
-        raise HTTPException(status_code=400, detail="Hours must be positive")
+    if req.hours == 0:
+        raise HTTPException(status_code=400, detail="Hours must be non-zero")
     org_store = get_org_store()
     org = org_store.get_org(req.org_id)
     if not org:
@@ -180,7 +183,8 @@ def grant_credits(req: GrantCreditsRequest, request: Request):
     seconds = req.hours * 3600
     add_contributed(req.org_id, seconds)
 
-    audit_from_request("credits.granted", request, target_type="org", target_id=req.org_id,
+    action = "credits.granted" if req.hours > 0 else "credits.revoked"
+    audit_from_request(action, request, target_type="org", target_id=req.org_id,
                        details={"hours": req.hours, "seconds": seconds})
 
     from ..gpu_credits import get_org_credits

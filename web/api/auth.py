@@ -251,7 +251,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 if not org_store.get_personal_org(user_id):
                     tier = app_metadata.get("tier", "pending")
                     if tier != "pending":
-                        personal_org = org_store.ensure_personal_org(user_id, email)
+                        # Use display name from user store if available
+                        user_record = store.get_user(user_id)
+                        display_name = user_record.name if user_record else ""
+                        personal_org = org_store.ensure_personal_org(user_id, email, display_name=display_name)
                         from .gpu_credits import STARTER_CREDITS, add_contributed
 
                         if STARTER_CREDITS > 0:

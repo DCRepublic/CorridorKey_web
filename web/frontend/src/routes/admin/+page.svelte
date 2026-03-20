@@ -54,6 +54,26 @@
 	let auditPage = $state(0);
 	let auditFilter = $state('');
 
+	// User ID → display name lookup (built from users list)
+	let userLookup = $derived.by(() => {
+		const map = new Map<string, { name: string; email: string }>();
+		for (const u of users) {
+			map.set(u.user_id, { name: u.name, email: u.email });
+		}
+		return map;
+	});
+
+	function displayName(u: { name?: string; email: string }): string {
+		return u.name?.trim() || u.email;
+	}
+
+	function resolveUser(id: string): string {
+		if (!id) return '—';
+		const u = userLookup.get(id);
+		if (u) return u.name?.trim() || u.email;
+		return id.substring(0, 12) + '...';
+	}
+
 	async function adminFetch(path: string, opts?: RequestInit) {
 		const token = localStorage.getItem('ck:auth_token');
 		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -116,7 +136,7 @@
 	}
 
 	async function grantCredits() {
-		if (!grantOrgId || grantHours <= 0) return;
+		if (!grantOrgId || grantHours === 0) return;
 		granting = true;
 		try {
 			await adminFetch('/api/admin/credits/grant', {
@@ -316,9 +336,9 @@
 						{#each pendingUsers as pu (pu.user_id)}
 							<div class="pending-card">
 								<div class="pending-info">
-									<span class="pending-email">{pu.email}</span>
+									<span class="pending-email">{displayName(pu)}</span>
 									{#if pu.name}
-										<span class="pending-name mono">{pu.name}</span>
+										<span class="pending-name mono">{pu.email}</span>
 									{/if}
 									<span class="pending-date mono">{formatDate(pu.signed_up_at)}</span>
 								</div>
@@ -347,7 +367,7 @@
 					<table class="data-table">
 						<thead>
 							<tr>
-								<th class="mono">EMAIL</th>
+								<th class="mono">USER</th>
 								<th class="mono">TIER</th>
 								<th class="mono">ORGS</th>
 								<th class="mono">SIGNED UP</th>
@@ -358,8 +378,8 @@
 							{#each users as u (u.user_id)}
 								<tr>
 									<td>
-										<span class="user-email">{u.email}</span>
-										{#if u.name}<span class="user-name mono">{u.name}</span>{/if}
+										<span class="user-email">{displayName(u)}</span>
+										{#if u.name}<span class="user-name mono">{u.email}</span>{/if}
 									</td>
 									<td>
 										<span class="tier-badge mono" data-tier={u.tier}>{u.tier}</span>
@@ -392,7 +412,7 @@
 					</table>
 				</div>
 			</div>
-		{:else}
+		{:else if activeTab === 'orgs'}
 			<!-- Organizations -->
 			<div class="section">
 				<h2 class="section-title mono">ALL ORGANIZATIONS <span class="count">{orgs.length}</span></h2>
@@ -411,7 +431,7 @@
 							{#each orgs as org (org.org_id)}
 								<tr>
 									<td>{org.name}</td>
-									<td class="mono">{org.owner_id.substring(0, 12)}...</td>
+									<td class="mono">{resolveUser(org.owner_id)}</td>
 									<td class="mono">{org.member_count}</td>
 									<td>
 										{#if org.personal}
@@ -427,10 +447,11 @@
 					</table>
 				</div>
 			</div>
+
 		{:else if activeTab === 'credits'}
 			<!-- GPU Credits -->
 			<div class="section">
-				<h2 class="section-title mono">GRANT CREDITS</h2>
+				<h2 class="section-title mono">GRANT / REVOKE CREDITS</h2>
 				<div class="grant-row">
 					<select class="tier-select mono" bind:value={grantOrgId}>
 						<option value="">Select org...</option>
@@ -438,12 +459,19 @@
 							<option value={org.org_id}>{org.name}</option>
 						{/each}
 					</select>
-					<input type="number" class="grant-input mono" bind:value={grantHours} min="0.1" step="0.5" />
+					<input type="number" class="grant-input mono" bind:value={grantHours} step="0.5" />
 					<span class="grant-unit mono">hours</span>
-					<button class="btn btn-approve mono" onclick={grantCredits} disabled={granting || !grantOrgId}>
-						{granting ? '...' : 'GRANT'}
+					<button
+						class="btn mono"
+						class:btn-approve={grantHours > 0}
+						class:btn-reject={grantHours < 0}
+						onclick={grantCredits}
+						disabled={granting || !grantOrgId || grantHours === 0}
+					>
+						{granting ? '...' : grantHours < 0 ? 'REVOKE' : 'GRANT'}
 					</button>
 				</div>
+				<p class="grant-hint mono">Use negative hours to revoke credits.</p>
 			</div>
 
 			<div class="section">
@@ -516,7 +544,7 @@
 						<table class="data-table">
 							<thead>
 								<tr>
-									<th class="mono">EMAIL</th>
+									<th class="mono">USER</th>
 									<th class="mono">TIER</th>
 									<th class="mono">ORGS</th>
 									<th class="mono">ACTIONS</th>
@@ -525,7 +553,7 @@
 							<tbody>
 								{#each users as u (u.user_id)}
 									<tr>
-										<td>{u.email}</td>
+										<td>{displayName(u)}</td>
 										<td><span class="tier-badge mono" data-tier={u.tier}>{u.tier}</span></td>
 										<td class="mono org-cell">
 											{#each (u.orgs ?? []) as o}
@@ -546,7 +574,7 @@
 				{#if selectedUserActivity}
 					<div class="activity-panel">
 						<div class="activity-header">
-							<h3 class="mono">{selectedUserActivity.user.email}</h3>
+							<h3 class="mono">{selectedUserActivity.user.name || selectedUserActivity.user.email}</h3>
 							<button class="btn-icon-close" onclick={() => selectedUserActivity = null}>&times;</button>
 						</div>
 						<div class="activity-grid">
@@ -586,6 +614,7 @@
 						<option value="user.rejected">user.rejected</option>
 						<option value="user.tier_changed">user.tier_changed</option>
 						<option value="credits.granted">credits.granted</option>
+						<option value="credits.revoked">credits.revoked</option>
 						<option value="org.ip_allowlist_updated">org.ip_allowlist_updated</option>
 					</select>
 				</div>
@@ -605,8 +634,15 @@
 								<tr>
 									<td class="mono">{e.timestamp?.substring(0, 19).replace('T', ' ') ?? '—'}</td>
 									<td><span class="audit-action mono">{e.action}</span></td>
-									<td class="mono">{e.target_type}:{(e.target_id ?? '').substring(0, 12)}</td>
-									<td class="mono">{(e.actor_user_id ?? '').substring(0, 12)}</td>
+									<td class="mono">
+										{e.target_type}:
+										{#if e.target_type === 'user'}
+											{resolveUser(e.target_id)}
+										{:else}
+											{(e.target_id ?? '').substring(0, 12)}
+										{/if}
+									</td>
+									<td class="mono">{resolveUser(e.actor_user_id)}</td>
 									<td class="mono">{e.ip_address ?? '—'}</td>
 								</tr>
 							{/each}
@@ -882,6 +918,7 @@
 	.grant-input { width: 80px; padding: 6px 10px; background: var(--surface-3); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 13px; outline: none; text-align: center; }
 	.grant-input:focus { border-color: var(--accent); }
 	.grant-unit { font-size: 12px; color: var(--text-tertiary); }
+	.grant-hint { font-size: 11px; color: var(--text-tertiary); margin-top: var(--sp-2); }
 
 	.positive-text { color: var(--state-complete); }
 	.negative-text { color: var(--state-error); }

@@ -125,12 +125,18 @@ class OrgStore:
                 return org
         return None
 
-    def ensure_personal_org(self, user_id: str, email: str) -> Org:
+    def ensure_personal_org(self, user_id: str, email: str, display_name: str = "") -> Org:
         """Get or create the user's personal org."""
         existing = self.get_personal_org(user_id)
         if existing:
             return existing
-        name = email.split("@")[0] if email else user_id[:8]
+        # Prefer the user's display name, fall back to email prefix
+        if display_name and display_name.strip():
+            name = display_name.strip()
+        elif email:
+            name = email.split("@")[0]
+        else:
+            name = user_id[:8]
         return self.create_org(name=f"{name}'s workspace", owner_id=user_id, personal=True)
 
     def add_member(self, org_id: str, user_id: str, role: str = "member") -> OrgMember:
