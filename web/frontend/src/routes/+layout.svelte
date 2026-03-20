@@ -86,7 +86,7 @@
 					window.location.href = '/login';
 					return;
 				}
-				if (hasToken && isPublic && currentPath !== '/pending') {
+				if (hasToken && isPublic && currentPath !== '/pending' && !currentPath.startsWith('/status')) {
 					// Already logged in but on login/signup — redirect to app
 					goto('/clips');
 					return;
