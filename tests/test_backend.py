@@ -85,13 +85,13 @@ class TestDiscoverCheckpoint:
         with mock.patch("CorridorKeyModule.backend.CHECKPOINT_DIR", str(tmp_path)):
             with mock.patch("huggingface_hub.hf_hub_download") as mock_dl:
                 # Simulate hf_hub_download returning a cached file
-                cached = tmp_path / "hf_cache" / "CorridorKey.pth"
+                cached = tmp_path / "hf_cache" / "CorridorKey_v1.0.pth"
                 cached.parent.mkdir()
                 cached.write_bytes(b"fake-checkpoint")
                 mock_dl.return_value = str(cached)
 
                 result = _discover_checkpoint(TORCH_EXT)
-                assert result.name == "CorridorKey.pth"
+                assert result.name == "CorridorKey_v1.0.pth"
                 assert result.exists()
                 mock_dl.assert_called_once()
 
@@ -127,8 +127,8 @@ class TestDiscoverCheckpoint:
             assert result == ckpt
 
     def test_ensure_torch_checkpoint_happy_path(self, tmp_path):
-        """Mock hf_hub_download, verify copy to CHECKPOINT_DIR/CorridorKey.pth."""
-        cached = tmp_path / "hf_cache" / "CorridorKey.pth"
+        """Mock hf_hub_download, verify copy to CHECKPOINT_DIR/CorridorKey_v1.0.pth."""
+        cached = tmp_path / "hf_cache" / "CorridorKey_v1.0.pth"
         cached.parent.mkdir()
         cached.write_bytes(b"fake-checkpoint-data")
 
@@ -175,7 +175,7 @@ class TestDiscoverCheckpoint:
 
     def test_disk_space_error(self, tmp_path):
         """OSError ENOSPC from copy2 produces message mentioning ~300 MB."""
-        cached = tmp_path / "hf_cache" / "CorridorKey.pth"
+        cached = tmp_path / "hf_cache" / "CorridorKey_v1.0.pth"
         cached.parent.mkdir()
         cached.write_bytes(b"data")
 
@@ -190,7 +190,7 @@ class TestDiscoverCheckpoint:
 
     def test_logging_on_download(self, tmp_path, caplog):
         """Info-level log messages emitted at download start and completion."""
-        cached = tmp_path / "hf_cache" / "CorridorKey.pth"
+        cached = tmp_path / "hf_cache" / "CorridorKey_v1.0.pth"
         cached.parent.mkdir()
         cached.write_bytes(b"data")
 

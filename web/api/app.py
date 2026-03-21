@@ -361,6 +361,7 @@ def create_app() -> FastAPI:
     app.include_router(clips.router)
     app.include_router(jobs.router)
     app.include_router(system.router)
+    app.include_router(system.weights_router)  # No auth — nodes use CK_AUTH_TOKEN
     app.include_router(preview.router)
     app.include_router(projects.router)
     app.include_router(nodes.router)

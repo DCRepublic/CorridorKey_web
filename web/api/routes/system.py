@@ -224,7 +224,10 @@ def get_weights():
     return info
 
 
-# --- Weight directories for node sync ---
+# --- Weight sync for nodes (no auth — nodes use CK_AUTH_TOKEN, not JWT) ---
+# Separate router without require_member so nodes can access weights.
+weights_router = APIRouter(prefix="/api/system", tags=["system"])
+
 _WEIGHT_DIRS: dict[str, str] = {
     "corridorkey": os.path.join(_BASE_DIR, "CorridorKeyModule", "checkpoints"),
     "gvm": os.path.join(_BASE_DIR, "gvm_core", "weights"),
@@ -245,7 +248,7 @@ def _walk_files(root: str) -> list[dict]:
     return result
 
 
-@router.get("/weights/{name}/manifest")
+@weights_router.get("/weights/{name}/manifest")
 def get_weight_manifest(name: str):
     """List all files in a weight set with relative paths and sizes.
 
@@ -259,7 +262,7 @@ def get_weight_manifest(name: str):
     return {"name": name, "root": root, "files": files, "total_bytes": total_bytes}
 
 
-@router.get("/weights/{name}/file/{file_path:path}")
+@weights_router.get("/weights/{name}/file/{file_path:path}")
 def download_weight_file(name: str, file_path: str):
     """Download a single weight file. Used by remote nodes for weight sync."""
     root = _WEIGHT_DIRS.get(name)
