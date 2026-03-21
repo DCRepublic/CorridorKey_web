@@ -108,6 +108,16 @@ class GPUSlotSchema(BaseModel):
     vram_free_gb: float = 0.0
 
 
+class NodeSecurityInfo(BaseModel):
+    """Self-reported security posture from the node agent."""
+
+    running_as_root: bool = True  # default unsafe until proven otherwise
+    hardened: bool = False
+    uid: int = 0
+    read_only_fs: bool = False
+    agent_version: str = ""
+
+
 class NodeRegisterRequest(BaseModel):
     node_id: str
     name: str
@@ -120,6 +130,7 @@ class NodeRegisterRequest(BaseModel):
     shared_storage: str | None = None
     org_id: str | None = None
     accepted_types: list[str] = []
+    security: NodeSecurityInfo = NodeSecurityInfo()
 
 
 class NodeHeartbeatRequest(BaseModel):
@@ -141,7 +152,48 @@ class JobResultRequest(BaseModel):
 @router.post("/register")
 def register_node(req: NodeRegisterRequest, request: Request):
     """Register a new worker node or update an existing one."""
-    # Resolve org_id: per-node token takes priority, then request body
+    import os as _os
+
+    # --- Security posture checks ---
+    security_warnings: list[str] = []
+    require_hardened = _os.environ.get("CK_REQUIRE_HARDENED", "").strip().lower() in ("true", "1", "yes")
+
+    # Server-verifiable: is the node using a per-node token (not legacy shared secret)?
+    has_per_node_token = getattr(request.state, "node_token", None) is not None
+    if not has_per_node_token:
+        security_warnings.append("using legacy shared secret instead of per-node token")
+
+    # Server-verifiable: is the connection over HTTPS?
+    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    if forwarded_proto != "https" and request.url.hostname not in ("localhost", "127.0.0.1"):
+        security_warnings.append("connecting over plain HTTP (tokens in cleartext)")
+
+    # Self-reported: running as root?
+    if req.security.running_as_root:
+        security_warnings.append("running as root (uid 0)")
+
+    # Self-reported: not hardened?
+    if not req.security.hardened:
+        security_warnings.append("not running in hardened mode")
+
+    # Reject if CK_REQUIRE_HARDENED and node doesn't meet requirements
+    if require_hardened:
+        if req.security.running_as_root or not has_per_node_token:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Node rejected: server requires hardened nodes. Issues: {', '.join(security_warnings)}",
+            )
+
+    if security_warnings:
+        logger.warning(f"Node {req.name} ({req.node_id}) security: {', '.join(security_warnings)}")
+
+    # Apply reputation penalty for insecure nodes
+    if security_warnings:
+        from ..node_reputation import record_security_warning
+
+        record_security_warning(req.node_id, security_warnings)
+
+    # --- Registration ---
     org_id = getattr(request.state, "node_org_id", None) or req.org_id
     gpu_slots = [
         GPUSlot(index=g.index, name=g.name, vram_total_gb=g.vram_total_gb, vram_free_gb=g.vram_free_gb)
@@ -171,7 +223,11 @@ def register_node(req: NodeRegisterRequest, request: Request):
     if node:
         _restore_node_config(node)
         manager.send_node_update(node.to_dict(), org_id=node.org_id)
-    return {"status": "registered", "node_id": req.node_id}
+    return {
+        "status": "registered",
+        "node_id": req.node_id,
+        "security_warnings": security_warnings,
+    }
 
 
 @router.post("/{node_id}/heartbeat")

@@ -118,12 +118,23 @@ class NodeAgent:
             "capabilities": ["cuda"] if gpu_slots else ["cpu"],
             "shared_storage": self.shared_storage,
             "accepted_types": [t.strip() for t in config.ACCEPTED_TYPES.split(",") if t.strip()],
+            "security": {
+                "running_as_root": os.getuid() == 0,
+                "hardened": os.environ.get("CK_NODE_HARDENED", "").strip().lower() in ("true", "1"),
+                "uid": os.getuid(),
+                "read_only_fs": not os.access("/", os.W_OK),
+                "agent_version": "1.0.0",
+            },
         }
 
         try:
             r = self._api("post", "/api/nodes/register", json=payload)
             r.raise_for_status()
+            data = r.json()
             logger.info(f"Registered as '{self.name}' ({self.node_id}) with {len(gpu_slots)} GPU(s)")
+            # Log any security warnings from the server
+            for w in data.get("security_warnings", []):
+                logger.warning(f"Server security warning: {w}")
             return True
         except Exception as e:
             logger.error(f"Registration failed: {e}")

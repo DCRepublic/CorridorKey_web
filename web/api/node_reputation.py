@@ -35,6 +35,7 @@ class NodeReputation:
     total_processing_seconds: float = 0.0
     missed_heartbeats: int = 0
     total_heartbeats: int = 0
+    security_warnings: int = 0  # count of security issues detected on registration
     last_updated: float = 0.0
 
     @property
@@ -55,9 +56,15 @@ class NodeReputation:
         return max(0, 1.0 - (self.missed_heartbeats / self.total_heartbeats))
 
     @property
+    def security_penalty(self) -> float:
+        """Penalty for security warnings (0-15 points deducted)."""
+        return min(15, self.security_warnings * 5)
+
+    @property
     def score(self) -> int:
         """Composite reputation score 0-100."""
         s = (self.success_rate * 50) + (min(1.0, self.avg_fps / 2.0) * 20) + (self.uptime_rate * 30)
+        s -= self.security_penalty
         return max(0, min(100, round(s)))
 
     def to_dict(self) -> dict[str, Any]:
@@ -148,6 +155,20 @@ def record_heartbeat(node_id: str, on_time: bool = True) -> None:
         rep.missed_heartbeats += 1
     reps[node_id] = rep.__dict__
     _save_reputations(reps)
+
+
+def record_security_warning(node_id: str, warnings: list[str]) -> None:
+    """Record security warnings from node registration. Penalizes reputation."""
+    if not warnings:
+        return
+    reps = _load_reputations()
+    data = reps.get(node_id, {"node_id": node_id})
+    rep = NodeReputation(**data)
+    rep.security_warnings = len(warnings)
+    rep.last_updated = time.time()
+    reps[node_id] = rep.__dict__
+    _save_reputations(reps)
+    logger.info(f"Node {node_id} security penalty: {rep.security_penalty} pts for {warnings}")
 
 
 def _auto_pause_node(node_id: str) -> None:
