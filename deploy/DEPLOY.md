@@ -297,6 +297,7 @@ services:
       POSTGRES_DB: corridorkey
     volumes:
       - supabase-db-data:/var/lib/postgresql/data
+      - ./init-roles.sql:/docker-entrypoint-initdb.d/00-init-roles.sql:ro
       - ./init-db.sql:/docker-entrypoint-initdb.d/99-corridorkey.sql:ro
     deploy:
       restart_policy:
