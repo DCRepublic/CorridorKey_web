@@ -365,85 +365,60 @@ def retry_shard_group(group_id: str, request: Request):
 def submit_gvm(req: GVMJobRequest, request: Request):
     """Generate alpha hints using Generative Video Matting.
 
-    Modes:
-    - speed: batch_size=1, sharded across available nodes (default)
-    - quality: batch_size=8, temporal coherence, single node only
-    - quality_sharded: batch_size=8, temporal coherence, sharded across
-      nodes with overlap frames at boundaries
+    Automatically shards across available nodes when multiple GPUs are
+    online. Each node processes a subset of frames independently (batch=1).
+    Falls back to single-node when no other GPUs are available.
     """
-    valid_modes = ("speed", "quality", "quality_sharded")
-    if req.gvm_mode not in valid_modes:
-        raise HTTPException(status_code=400, detail=f"gvm_mode must be one of: {valid_modes}")
-
     queue = get_queue()
     service = get_service()
     submitted = []
 
-    # Determine batch size from mode
-    batch_size = 1 if req.gvm_mode == "speed" else 8
-
     for clip_name in req.clip_names:
-        gvm_params = {"gvm_mode": req.gvm_mode, "batch_size": batch_size}
+        # Check if we can shard across nodes
+        from ..org_isolation import resolve_clips_dir
 
-        # Sharding for speed and quality_sharded modes
-        if req.gvm_mode in ("speed", "quality_sharded"):
-            from ..org_isolation import resolve_clips_dir
+        clips = service.scan_clips(resolve_clips_dir(request))
+        clip = next((c for c in clips if c.name == clip_name), None)
+        frame_count = clip.input_asset.frame_count if clip and clip.input_asset else 0
 
-            clips = service.scan_clips(resolve_clips_dir(request))
-            clip = next((c for c in clips if c.name == clip_name), None)
-            frame_count = clip.input_asset.frame_count if clip and clip.input_asset else 0
+        from ..worker import get_local_gpu_enabled
 
-            # Count available nodes for GVM
-            from ..worker import get_local_gpu_enabled
+        available = 0
+        if get_local_gpu_enabled():
+            available += 1
+        online_nodes = [
+            n for n in registry.list_nodes()
+            if n.can_accept_jobs and n.accepts_job_type("gvm_alpha") and n.status != "busy"
+        ]
+        available += len(online_nodes)
 
-            available = 0
-            if get_local_gpu_enabled():
-                available += 1
-            online_nodes = [
-                n for n in registry.list_nodes()
-                if n.can_accept_jobs and n.accepts_job_type("gvm_alpha") and n.status != "busy"
-            ]
-            available += len(online_nodes)
+        min_shard = 20
 
-            # Overlap frames for temporal coherence at shard boundaries
-            overlap = 8 if req.gvm_mode == "quality_sharded" else 0
-            min_shard = max(20, overlap * 3)
+        if available > 1 and frame_count > min_shard:
+            num_shards = min(available, frame_count // min_shard)
+            if num_shards > 1:
+                group_id = uuid.uuid4().hex[:8]
+                base = frame_count // num_shards
+                remainder = frame_count % num_shards
+                cursor = 0
+                for i in range(num_shards):
+                    size = base + (1 if i < remainder else 0)
+                    job = GPUJob(
+                        job_type=JobType.GVM_ALPHA,
+                        clip_name=clip_name,
+                        params={"frame_range": [cursor, cursor + size]},
+                        shard_group=group_id,
+                        shard_index=i,
+                        shard_total=num_shards,
+                    )
+                    _stamp_job(job, request)
+                    if queue.submit(job):
+                        submitted.append(_job_to_schema(job))
+                    cursor += size
+                continue
 
-            if available > 1 and frame_count > min_shard:
-                num_shards = min(available, frame_count // min_shard)
-                if num_shards > 1:
-                    group_id = uuid.uuid4().hex[:8]
-                    base = frame_count // num_shards
-                    remainder = frame_count % num_shards
-                    cursor = 0
-                    for i in range(num_shards):
-                        size = base + (1 if i < remainder else 0)
-                        # Add overlap at boundaries for quality_sharded
-                        start = max(0, cursor - overlap) if i > 0 else cursor
-                        end = min(frame_count, cursor + size + overlap) if i < num_shards - 1 else cursor + size
-                        job = GPUJob(
-                            job_type=JobType.GVM_ALPHA,
-                            clip_name=clip_name,
-                            params={
-                                **gvm_params,
-                                "frame_range": [start, end],
-                            },
-                            shard_group=group_id,
-                            shard_index=i,
-                            shard_total=num_shards,
-                        )
-                        _stamp_job(job, request)
-                        if queue.submit(job):
-                            submitted.append(_job_to_schema(job))
-                        cursor += size
-                    continue
-
-        # Single node (quality mode or not enough nodes to shard)
-        job = GPUJob(
-            job_type=JobType.GVM_ALPHA,
-            clip_name=clip_name,
-            params=gvm_params,
-        )
+        # Single node — not enough GPUs to shard
+        job = GPUJob(job_type=JobType.GVM_ALPHA, clip_name=clip_name)
         _stamp_job(job, request)
         if queue.submit(job):
             submitted.append(_job_to_schema(job))

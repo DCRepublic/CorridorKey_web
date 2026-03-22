@@ -209,11 +209,9 @@ def _execute_gpu_job(service: CorridorKeyService, job: GPUJob, clips_dir: str) -
         )
     elif job.job_type == JobType.GVM_ALPHA:
         gvm_frame_range = job.params.get("frame_range")
-        gvm_batch_size = job.params.get("batch_size", 1)
         service.run_gvm(
             clip, job=job, on_progress=on_progress, on_warning=on_warning,
             frame_range=tuple(gvm_frame_range) if gvm_frame_range else None,
-            batch_size=gvm_batch_size,
         )
     elif job.job_type == JobType.VIDEOMAMA_ALPHA:
         chunk_size = job.params.get("chunk_size", 50)

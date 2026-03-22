@@ -230,8 +230,8 @@ export const api = {
 			}),
 		submitExtract: (clip_names: string[]) =>
 			request<Job[]>('POST', '/api/jobs/extract', { clip_names }),
-		submitGVM: (clip_names: string[], gvm_mode: string = 'speed') =>
-			request<Job[]>('POST', '/api/jobs/gvm', { clip_names, gvm_mode }),
+		submitGVM: (clip_names: string[]) =>
+			request<Job[]>('POST', '/api/jobs/gvm', { clip_names }),
 		submitVideoMaMa: (clip_names: string[], chunk_size = 50) =>
 			request<Job[]>('POST', '/api/jobs/videomama', { clip_names, chunk_size }),
 		estimate: (jobType: string, frameCount: number, numShards = 1) =>

@@ -405,11 +405,9 @@ class NodeAgent:
                 )
             elif job_type == JobType.GVM_ALPHA:
                 gvm_frame_range = params.get("frame_range")
-                gvm_batch_size = params.get("batch_size", 1)
                 service.run_gvm(
                     clip, job=job, on_progress=on_progress, on_warning=on_warning,
                     frame_range=tuple(gvm_frame_range) if gvm_frame_range else None,
-                    batch_size=gvm_batch_size,
                 )
             elif job_type == JobType.VIDEOMAMA_ALPHA:
                 chunk_size = params.get("chunk_size", 50)

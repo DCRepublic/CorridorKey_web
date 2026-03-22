@@ -828,10 +828,6 @@ class CorridorKeyService:
 
     # --- GVM Alpha Generation ---
 
-    # GVM batch size: frames per batch. 1 = per-frame (fast, shardable).
-    # Higher = temporal coherence (less flicker) but slower and needs more VRAM.
-    # Must be even if > 1 (GVM pipeline requirement).
-    _gvm_batch_size = int(os.environ.get("CK_GVM_BATCH_SIZE", "1").strip())
 
     def run_gvm(
         self,
@@ -840,27 +836,22 @@ class CorridorKeyService:
         on_progress: Callable[[str, int, int], None] | None = None,
         on_warning: Callable[[str], None] | None = None,
         frame_range: tuple[int, int] | None = None,
-        batch_size: int | None = None,
     ) -> None:
         """Run GVM auto alpha generation for a clip.
 
         Transitions clip: RAW → READY (creates AlphaHint directory).
-        When CK_GVM_CONCURRENCY > 1, splits the input frames into chunks
-        and processes them in parallel threads on the same GPU.
 
         Args:
             clip: Must be in RAW state with input_asset.
             job: Optional GPUJob for cancel checking.
             on_progress: Progress callback.
             on_warning: Warning callback.
-            frame_range: Optional (start, end) to process a subset of frames.
-            batch_size: Override _gvm_batch_size (1=speed, 8=quality).
+            frame_range: Optional (start, end) to process a subset of frames (for sharding).
         """
         if clip.input_asset is None:
             raise CorridorKeyError(f"Clip '{clip.name}' missing input asset for GVM")
 
         t_start = time.monotonic()
-        effective_batch = batch_size if batch_size is not None else self._gvm_batch_size
 
         with self._gpu_lock:
             gvm = self._get_gvm()
@@ -879,7 +870,7 @@ class CorridorKeyService:
         try:
             self._run_gvm_single(
                 gvm, clip, input_path, alpha_dir,
-                job, on_progress, on_warning, effective_batch,
+                job, on_progress, on_warning,
             )
         finally:
             if temp_dir:
@@ -926,18 +917,13 @@ class CorridorKeyService:
         logger.info(f"GVM frame range [{start}:{end}] — {len(subset)} of {len(all_frames)} frames")
         return subset_dir, temp_base
 
-    def _run_gvm_single(self, gvm, clip, input_path, alpha_dir, job, on_progress, on_warning, batch_size=1):
-        """Run GVM on all frames sequentially."""
+    def _run_gvm_single(self, gvm, clip, input_path, alpha_dir, job, on_progress, on_warning):
+        """Run GVM on all frames sequentially (batch=1, one frame at a time)."""
         if on_progress:
             on_progress(clip.name, 0, 1)
 
         if job and job.is_cancelled:
             raise JobCancelledError(clip.name, 0)
-
-        # Ensure even batch size for GVM pipeline requirement
-        effective_batch = max(1, batch_size)
-        if effective_batch > 1 and effective_batch % 2 != 0:
-            effective_batch += 1
 
         def _gvm_progress(batch_idx: int, total_batches: int) -> None:
             if on_progress:
@@ -949,8 +935,8 @@ class CorridorKeyService:
             gvm.process_sequence(
                 input_path=input_path,
                 output_dir=clip.root_path,
-                num_frames_per_batch=effective_batch,
-                decode_chunk_size=min(effective_batch, 8),
+                num_frames_per_batch=1,
+                decode_chunk_size=1,
                 denoise_steps=1,
                 mode="matte",
                 write_video=False,

@@ -13,7 +13,6 @@
 	let weights = $state<Record<string, WeightInfo>>({});
 	let weightsLoading = $state(true);
 	let vramLimit = $state(0);
-	let gvmBatchSize = $state(1);
 	let vramLimitSaving = $state(false);
 
 	const weightLabels: Record<string, { name: string; desc: string }> = {
@@ -81,31 +80,12 @@
 		}
 	}
 
-	async function loadGvmSettings() {
-		try {
-			const token = localStorage.getItem('ck:auth_token');
-			const headers: Record<string, string> = token ? { 'Authorization': `Bearer ${token}` } : {};
-			const batch = await fetch('/api/system/gvm-batch-size', { headers }).then(r => r.json());
-			gvmBatchSize = batch.batch_size ?? 1;
-		} catch { /* ignore */ }
-	}
-
-	async function saveGvmBatchSize() {
-		try {
-			const token = localStorage.getItem('ck:auth_token');
-			await fetch(`/api/system/gvm-batch-size?batch_size=${gvmBatchSize}`, {
-				method: 'POST', headers: { 'Authorization': `Bearer ${token}` }
-			});
-		} catch (e) { toast.error(String(e)); }
-	}
-
 	onMount(() => {
 		const user = getStoredUser();
 		isAdmin = user?.tier === 'platform_admin';
 		if (isAdmin) {
 			loadWeights();
 			loadVramLimit();
-			loadGvmSettings();
 		}
 	});
 </script>
@@ -215,22 +195,6 @@
 			</button>
 		</section>
 
-		<section class="settings-card">
-			<h2 class="card-title mono">GVM ALPHA GENERATION</h2>
-
-			<div class="setting-row">
-				<div class="setting-info">
-					<span class="setting-label">Default Batch Size</span>
-					<span class="setting-hint">1 = per-frame (fast, shardable across nodes). 8 = temporal coherence (less flicker, single node, more VRAM).</span>
-				</div>
-				<select class="tier-select mono" bind:value={gvmBatchSize} onchange={saveGvmBatchSize}>
-					<option value={1}>1 (Standard)</option>
-					<option value={2}>2</option>
-					<option value={4}>4</option>
-					<option value={8}>8 (Quality)</option>
-				</select>
-			</div>
-		</section>
 		{/if}
 
 		<section class="settings-card">

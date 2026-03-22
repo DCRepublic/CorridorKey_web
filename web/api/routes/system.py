@@ -195,28 +195,6 @@ def set_claim_delay_setting(seconds: float):
 
 
 
-@router.get("/gvm-batch-size")
-def get_gvm_batch_size():
-    """Get the default GVM batch size (1=speed, 8=quality)."""
-    service = get_service()
-    return {"batch_size": service._gvm_batch_size}
-
-
-@router.post("/gvm-batch-size", dependencies=[Depends(require_admin)])
-def set_gvm_batch_size(batch_size: int):
-    """Set the default GVM batch size. Admin only.
-
-    1 = per-frame (fast, shardable). 8+ = temporal coherence (less flicker).
-    Must be 1 or an even number (GVM pipeline requirement).
-    """
-    if batch_size < 1 or batch_size > 32:
-        raise HTTPException(status_code=400, detail="Batch size must be 1-32")
-    if batch_size > 1 and batch_size % 2 != 0:
-        raise HTTPException(status_code=400, detail="Batch size must be 1 or an even number")
-    service = get_service()
-    service._gvm_batch_size = batch_size
-    return {"status": "ok", "batch_size": batch_size}
-
 
 @router.post("/unload", dependencies=[Depends(require_admin)])
 def unload_engines():

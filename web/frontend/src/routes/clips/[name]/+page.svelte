@@ -18,7 +18,6 @@
 
 	let params = $state<InferenceParams>({ ...$defaultParams });
 	let outputConfig = $state<OutputConfig>({ ...$defaultOutputConfig });
-	let gvmMode = $state<'speed' | 'quality' | 'quality_sharded'>('speed');
 	let costEstimates = $state<Record<string, { estimated_gpu_minutes: number; estimated_wall_clock_seconds: number }>>({});
 
 	let clipName = $derived(decodeURIComponent(page.params.name));
@@ -137,7 +136,7 @@
 		if (!clip) return;
 		submitting = true;
 		try {
-			await api.jobs.submitGVM([clip.name], gvmMode);
+			await api.jobs.submitGVM([clip.name]);
 			await refreshJobs();
 		} catch (e) {
 			toast.error(e instanceof Error ? e.message : String(e));
@@ -344,16 +343,9 @@
 						</button>
 					{/if}
 					{#if canRunGVM}
-						<div class="gvm-row">
-							<button class="btn btn-secondary" onclick={runGVM} disabled={submitting}>
-								Run GVM Alpha
-							</button>
-							<select class="gvm-mode-select mono" bind:value={gvmMode}>
-								<option value="speed">Standard (sharded)</option>
-								<option value="quality">Quality (single node)</option>
-								<option value="quality_sharded">Quality + Sharded</option>
-							</select>
-						</div>
+						<button class="btn btn-secondary" onclick={runGVM} disabled={submitting}>
+							Run GVM Alpha
+						</button>
 					{/if}
 					{#if canRunVideoMaMa}
 						<button class="btn btn-secondary" onclick={runVideoMaMa} disabled={submitting}>
@@ -543,24 +535,6 @@
 		color: var(--secondary-hover);
 		border-color: var(--secondary-hover);
 	}
-
-	.gvm-row {
-		display: flex;
-		gap: var(--sp-2);
-		align-items: center;
-	}
-
-	.gvm-mode-select {
-		font-size: 11px;
-		padding: 6px 8px;
-		background: var(--surface-3);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text-secondary);
-		cursor: pointer;
-		outline: none;
-	}
-	.gvm-mode-select:focus { border-color: var(--accent); }
 
 	.btn-hero {
 		background: var(--accent);
