@@ -31,7 +31,7 @@
 
 	let canExtract = $derived(clip?.state === 'EXTRACTING');
 	let canRunInference = $derived(clip?.state === 'READY' || clip?.state === 'COMPLETE');
-	let canRunGVM = $derived(clip?.state === 'RAW');
+	let canRunGVM = $derived(clip?.state === 'RAW' || clip?.state === 'READY' || clip?.state === 'COMPLETE');
 	let canRunVideoMaMa = $derived(clip?.state === 'MASKED');
 
 	// Track render progress for this clip's active job
