@@ -156,6 +156,6 @@ def delete_project(name: str, request: Request):
         shutil.rmtree(project_dir)
         logger.info(f"Deleted project: {project_dir}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete: {e}") from e
+        raise HTTPException(status_code=500, detail="Failed to delete") from e
 
     return {"status": "deleted", "name": name}

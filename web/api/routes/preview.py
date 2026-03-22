@@ -306,7 +306,7 @@ def get_preview_video(clip_name: str, pass_name: str, request: Request, fps: int
         logger.error(f"Video stitch failed: {e}")
         with _encode_progress_lock:
             _encode_progress[key] = {"status": "error", "detail": str(e)}
-        raise HTTPException(status_code=500, detail=f"Failed to create preview video: {e}") from e
+        raise HTTPException(status_code=500, detail="Failed to create preview video") from e
     finally:
         encode_lock.release()
         if os.path.isfile(concat_path):
@@ -347,7 +347,7 @@ def download_pass(clip_name: str, pass_name: str, request: Request):
                 fpath = os.path.join(target_dir, fname)
                 zf.write(fpath, arcname=os.path.join(pass_name, fname))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create ZIP: {e}") from e
+        raise HTTPException(status_code=500, detail="Failed to create ZIP") from e
 
     return FileResponse(
         zip_path,

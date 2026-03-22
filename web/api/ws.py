@@ -40,7 +40,7 @@ class ConnectionManager:
         self._loop = loop
 
     # Max concurrent WebSocket connections per user (0 = unlimited)
-    MAX_CONNECTIONS_PER_USER = 10
+    MAX_CONNECTIONS_PER_USER = 3
 
     async def connect(
         self, ws: WebSocket, user_id: str = "", org_ids: list[str] | None = None, is_admin: bool = False

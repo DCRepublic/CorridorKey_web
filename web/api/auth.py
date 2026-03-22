@@ -203,13 +203,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/") and request.method == "GET":
             return await call_next(request)
 
-        # Extract Bearer token from header or query param (for img/video src)
+        # Extract Bearer token from header
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
         else:
-            # Fallback: check query parameter (for <img src>, <video src>)
-            token = request.query_params.get("token", "")
+            # Query param token ONLY for preview/download endpoints (img/video src tags)
+            # Restricted to prevent JWT leakage via URLs, logs, and referrer headers
+            _QUERY_TOKEN_PREFIXES = ("/api/preview/",)
+            if any(path.startswith(p) for p in _QUERY_TOKEN_PREFIXES):
+                token = request.query_params.get("token", "")
+            else:
+                token = ""
 
         if not token:
             return JSONResponse(status_code=401, content={"detail": "Missing Authorization header"})

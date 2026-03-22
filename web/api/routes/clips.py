@@ -59,7 +59,7 @@ def list_clips(request: Request):
         clips = service.scan_clips(clips_dir)
     except Exception as e:
         logger.error(f"Clip scan failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Internal server error") from e
     return ClipListResponse(
         clips=[_clip_to_schema(c) for c in clips],
         clips_dir=clips_dir,
@@ -74,7 +74,7 @@ def get_clip(name: str, request: Request):
     try:
         clips = service.scan_clips(clips_dir)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Internal server error") from e
     for clip in clips:
         if clip.name == name:
             return _clip_to_schema(clip)
@@ -93,7 +93,7 @@ def delete_clip(name: str, request: Request):
     try:
         clips = service.scan_clips(clips_dir)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
     clip = next((c for c in clips if c.name == name), None)
     if clip is None:
@@ -122,7 +122,7 @@ def delete_clip(name: str, request: Request):
                 shutil.rmtree(project_dir)
                 logger.info(f"Deleted empty project directory: {project_dir}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete: {e}") from e
+        raise HTTPException(status_code=500, detail="Failed to delete") from e
 
     return {"status": "deleted", "name": name}
 
@@ -141,7 +141,7 @@ def move_clip(name: str, target_project: str, request: Request):
     try:
         clips = service.scan_clips(clips_dir)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
     clip = next((c for c in clips if c.name == name), None)
     if clip is None:
@@ -197,6 +197,6 @@ def move_clip(name: str, target_project: str, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to move clip: {e}") from e
+        raise HTTPException(status_code=500, detail="Failed to move clip") from e
 
     return {"status": "moved", "name": name, "target_project": target_project}

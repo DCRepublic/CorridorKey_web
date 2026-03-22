@@ -75,7 +75,7 @@ async def upload_video(file: UploadFile, request: Request, name: str | None = No
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}") from e
+            raise HTTPException(status_code=500, detail="Failed to save upload") from e
 
         try:
             clips_dir = resolve_clips_dir(request)
@@ -88,7 +88,7 @@ async def upload_video(file: UploadFile, request: Request, name: str | None = No
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create project: {e}") from e
+            raise HTTPException(status_code=500, detail="Failed to create project") from e
 
     # Scan the new clips
     service = get_service()
@@ -142,7 +142,7 @@ async def upload_frames(file: UploadFile, request: Request, name: str | None = N
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}") from e
+            raise HTTPException(status_code=500, detail="Failed to save upload") from e
 
         # Extract zip
         extract_dir = os.path.join(tmpdir, "extracted")
@@ -235,7 +235,7 @@ async def upload_alpha_hint(clip_name: str, file: UploadFile, request: Request):
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}") from e
+            raise HTTPException(status_code=500, detail="Failed to save upload") from e
 
         extract_dir = os.path.join(tmpdir, "extracted")
         try:
@@ -298,7 +298,7 @@ async def upload_videomama_mask(clip_name: str, file: UploadFile, request: Reque
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to save upload: {e}") from e
+            raise HTTPException(status_code=500, detail="Failed to save upload") from e
 
         extract_dir = os.path.join(tmpdir, "extracted")
         try:

@@ -479,10 +479,17 @@ def report_job_result(node_id: str, req: JobResultRequest):
         node = registry.get_node(node_id)
         elapsed = time.time() - job.started_at if job.started_at else 0
         if elapsed > 0 and node and node.org_id:
-            from ..gpu_credits import add_contributed
+            # Only credit if the node's org matches the job's org (or node is shared)
+            if not job.org_id or job.org_id == node.org_id or node.visibility == "shared":
+                from ..gpu_credits import add_contributed
 
-            add_contributed(node.org_id, elapsed)
-            logger.info(f"Credit: +{elapsed:.1f}s by node {node_id} -> org {node.org_id}")
+                add_contributed(node.org_id, elapsed)
+                logger.info(f"Credit: +{elapsed:.1f}s by node {node_id} -> org {node.org_id}")
+            else:
+                logger.warning(
+                    f"Credit denied: node {node_id} (org {node.org_id}) "
+                    f"completed job for org {job.org_id}"
+                )
 
         # Update reputation (CRKY-30)
         from ..node_reputation import record_job_completed
