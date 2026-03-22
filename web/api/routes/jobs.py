@@ -349,14 +349,93 @@ def retry_shard_group(group_id: str, request: Request):
 
 @router.post("/gvm", response_model=list[JobSchema], summary="Submit GVM alpha generation")
 def submit_gvm(req: GVMJobRequest, request: Request):
-    """Generate alpha hints using Generative Video Matting for one or more clips."""
+    """Generate alpha hints using Generative Video Matting.
+
+    Modes:
+    - speed: batch_size=1, can be sharded across nodes (default)
+    - quality: batch_size=8, temporal coherence, single node
+    - quality_sharded: batch_size=8, sharded with overlap frames
+    """
+    valid_modes = ("speed", "quality", "quality_sharded")
+    if req.gvm_mode not in valid_modes:
+        raise HTTPException(status_code=400, detail=f"gvm_mode must be one of: {valid_modes}")
+
     queue = get_queue()
+    service = get_service()
     submitted = []
+
+    # Determine batch size from mode
+    batch_size = 1 if req.gvm_mode == "speed" else 8
+
     for clip_name in req.clip_names:
-        job = GPUJob(job_type=JobType.GVM_ALPHA, clip_name=clip_name)
+        gvm_params = {"gvm_mode": req.gvm_mode, "batch_size": batch_size}
+
+        # Sharding for speed mode or quality_sharded mode
+        if req.gvm_mode in ("speed", "quality_sharded"):
+            from ..org_isolation import resolve_clips_dir
+
+            clips = service.scan_clips(resolve_clips_dir(request))
+            clip = next((c for c in clips if c.name == clip_name), None)
+            frame_count = clip.input_asset.frame_count if clip and clip.input_asset else 0
+
+            # Count available nodes for GVM
+            from ..worker import get_local_gpu_enabled
+
+            available = 0
+            if get_local_gpu_enabled():
+                available += 1
+            online_nodes = [
+                n for n in registry.list_nodes()
+                if n.can_accept_jobs and n.accepts_job_type("gvm_alpha") and n.status != "busy"
+            ]
+            available += len(online_nodes)
+
+            # Overlap frames for quality_sharded (none for speed)
+            overlap = 8 if req.gvm_mode == "quality_sharded" else 0
+            min_shard = max(20, overlap * 3)  # don't shard below this
+
+            if available > 1 and frame_count > min_shard:
+                num_shards = min(available, frame_count // min_shard)
+                if num_shards > 1:
+                    group_id = uuid.uuid4().hex[:8]
+                    # Even distribution with overlap
+                    base = frame_count // num_shards
+                    remainder = frame_count % num_shards
+                    cursor = 0
+                    for i in range(num_shards):
+                        size = base + (1 if i < remainder else 0)
+                        start = max(0, cursor - overlap) if i > 0 else cursor
+                        end = min(frame_count, cursor + size + overlap) if i < num_shards - 1 else cursor + size
+                        job = GPUJob(
+                            job_type=JobType.GVM_ALPHA,
+                            clip_name=clip_name,
+                            params={
+                                **gvm_params,
+                                "frame_range": [start, end],
+                                "overlap": overlap,
+                                "shard_start": cursor,
+                                "shard_end": cursor + size,
+                            },
+                            shard_group=group_id,
+                            shard_index=i,
+                            shard_total=num_shards,
+                        )
+                        _stamp_job(job, request)
+                        if queue.submit(job):
+                            submitted.append(_job_to_schema(job))
+                        cursor += size
+                    continue
+
+        # Single node (quality mode or not enough nodes to shard)
+        job = GPUJob(
+            job_type=JobType.GVM_ALPHA,
+            clip_name=clip_name,
+            params=gvm_params,
+        )
         _stamp_job(job, request)
         if queue.submit(job):
             submitted.append(_job_to_schema(job))
+
     if not submitted:
         raise HTTPException(status_code=409, detail="All jobs rejected (duplicates)")
     return submitted

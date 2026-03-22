@@ -80,6 +80,11 @@ class InferenceJobRequest(BaseModel):
 
 class GVMJobRequest(BaseModel):
     clip_names: list[str] = Field(max_length=_MAX_CLIPS)
+    # GVM quality mode:
+    #   "speed" = batch_size=1, per-frame, shardable across nodes (default)
+    #   "quality" = batch_size=8, temporal coherence, single node only
+    #   "quality_sharded" = batch_size=8, temporal, sharded with overlap frames
+    gvm_mode: str = "speed"
 
 
 class VideoMaMaJobRequest(BaseModel):
