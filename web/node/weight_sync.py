@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
-import sys
 
 import httpx
 
@@ -156,7 +154,7 @@ def _check_weights_exist(name: str, local_dir: str) -> bool:
 
 
 def _download_from_hf(name: str, local_dir: str) -> None:
-    """Download weights directly from HuggingFace as a fallback."""
+    """Download weights from HuggingFace using the Python API."""
     hf_info = HF_REPOS.get(name)
     if not hf_info:
         logger.warning(f"No HuggingFace repo configured for '{name}'")
@@ -171,37 +169,27 @@ def _download_from_hf(name: str, local_dir: str) -> None:
 
     os.makedirs(local_dir, exist_ok=True)
 
-    # Try huggingface-cli first, fall back to python -m
-    cmd = _build_hf_cmd(repo, local_dir, specific_files)
-
     logger.info(f"Downloading '{name}' from HuggingFace ({repo})...")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
-        if result.returncode == 0:
-            logger.info(f"HuggingFace download complete for '{name}'")
+        from huggingface_hub import hf_hub_download, snapshot_download
+
+        if specific_files:
+            # Download specific files
+            for fname in specific_files:
+                hf_hub_download(
+                    repo_id=repo,
+                    filename=fname,
+                    local_dir=local_dir,
+                )
+                logger.info(f"  Downloaded {fname}")
         else:
-            error = result.stderr.strip()[-300:] if result.stderr else "Unknown error"
-            logger.error(f"HuggingFace download failed for '{name}': {error}")
-    except subprocess.TimeoutExpired:
-        logger.error(f"HuggingFace download timed out for '{name}'")
-    except FileNotFoundError:
-        logger.error("huggingface-cli not found. Install with: pip install huggingface-hub")
-
-
-def _build_hf_cmd(repo: str, local_dir: str, specific_files: list[str] | None = None) -> list[str]:
-    """Build the huggingface download command."""
-    import shutil
-
-    for candidate in ["huggingface-cli", "hf"]:
-        found = shutil.which(candidate)
-        if found:
-            cmd = [found, "download", repo, "--local-dir", local_dir]
-            if specific_files:
-                cmd.extend(specific_files)
-            return cmd
-
-    # Fallback: python -m huggingface_hub
-    cmd = [sys.executable, "-m", "huggingface_hub", "download", repo, "--local-dir", local_dir]
-    if specific_files:
-        cmd.extend(specific_files)
-    return cmd
+            # Download entire repo
+            snapshot_download(
+                repo_id=repo,
+                local_dir=local_dir,
+                local_dir_use_symlinks=False,
+            )
+        logger.info(f"HuggingFace download complete for '{name}'")
+    except Exception as e:
+        logger.error(f"HuggingFace download failed for '{name}': {e}")
+        raise
