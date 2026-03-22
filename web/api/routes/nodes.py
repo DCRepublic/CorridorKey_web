@@ -437,8 +437,9 @@ def report_job_progress(node_id: str, job_id: str, current: int, total: int):
         job.current_frame = current
         job.total_frames = total
     oid = job.org_id if job else None
+    cancelled = job.status.value == "cancelled" if job else False
     manager.send_job_progress(job_id, "", current, total, org_id=oid)
-    return {"status": "ok"}
+    return {"status": "cancelled" if cancelled else "ok"}
 
 
 @router.post("/{node_id}/job-result")

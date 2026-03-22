@@ -1,11 +1,12 @@
 <script lang="ts">
 	import type { Job } from '$lib/api';
 	import { api } from '$lib/api';
+	import { dismissJob } from '$lib/stores/jobs';
 	import ProgressBar from './ProgressBar.svelte';
 
 	import { refreshJobs } from '$lib/stores/jobs';
 
-	let { job, showCancel = false, queueIndex = -1 }: { job: Job; showCancel?: boolean; queueIndex?: number } = $props();
+	let { job, showCancel = false, showDismiss = false, queueIndex = -1 }: { job: Job; showCancel?: boolean; showDismiss?: boolean; queueIndex?: number } = $props();
 
 	function formatDuration(seconds: number): string {
 		if (seconds <= 0) return '—';
@@ -142,6 +143,11 @@
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none">
 					<path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 				</svg>
+			</button>
+		{/if}
+		{#if showDismiss && !isRunning && !isQueued}
+			<button class="dismiss-btn" onclick={() => dismissJob(job.id)} title="Remove from history">
+				<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
 			</button>
 		{/if}
 	</div>
@@ -330,6 +336,25 @@
 		background: rgba(255, 82, 82, 0.1);
 		box-shadow: 0 0 8px rgba(255, 82, 82, 0.1);
 	}
+
+	.dismiss-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 20px;
+		height: 20px;
+		border-radius: 3px;
+		border: none;
+		background: transparent;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		transition: all 0.15s;
+		padding: 0;
+		opacity: 0;
+	}
+
+	.job-row:hover .dismiss-btn { opacity: 1; }
+	.dismiss-btn:hover { color: var(--text-secondary); }
 
 	.job-row.failed {
 		cursor: pointer;

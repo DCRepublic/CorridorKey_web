@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { currentJob, runningJobs, queuedJobs, jobHistory, refreshJobs } from '$lib/stores/jobs';
+	import { currentJob, runningJobs, queuedJobs, jobHistory, refreshJobs, clearDismissed } from '$lib/stores/jobs';
 	import { api } from '$lib/api';
 	import type { Job } from '$lib/api';
 	import JobRow from '../../components/JobRow.svelte';
@@ -166,7 +166,10 @@
 	<!-- History -->
 	{#if $jobHistory.length > 0}
 		<section class="section">
-			<h2 class="section-title mono">HISTORY</h2>
+			<div class="section-header">
+				<h2 class="section-title mono">HISTORY</h2>
+				<button class="clear-btn mono" onclick={clearDismissed}>SHOW ALL</button>
+			</div>
 			<div class="job-list">
 				{#each groupedHistory as item}
 					{#if isShardGroup(item)}
@@ -183,11 +186,11 @@
 						</div>
 						{#if expandedGroups.has(g.group_id)}
 							{#each g.shards as job (job.id)}
-								<JobRow {job} />
+								<JobRow {job} showDismiss />
 							{/each}
 						{/if}
 					{:else}
-						<JobRow job={item} />
+						<JobRow job={item} showDismiss />
 					{/if}
 				{/each}
 			</div>
@@ -287,6 +290,31 @@
 		align-items: center;
 		gap: var(--sp-2);
 	}
+
+	.section-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.section-header .section-title {
+		border-radius: 8px 8px 0 0;
+		flex: 1;
+	}
+
+	.clear-btn {
+		font-size: 9px;
+		letter-spacing: 0.06em;
+		color: var(--text-tertiary);
+		background: var(--surface-1);
+		border: 1px solid var(--border);
+		border-bottom: none;
+		border-radius: 0 8px 0 0;
+		padding: var(--sp-2) var(--sp-3);
+		cursor: pointer;
+		transition: color 0.15s;
+	}
+	.clear-btn:hover { color: var(--text-secondary); }
 
 	.count {
 		display: inline-flex;

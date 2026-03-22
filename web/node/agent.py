@@ -220,10 +220,17 @@ class NodeAgent:
             logger.debug(f"Poll failed: {e}")
             return None
 
-    def _report_progress(self, job_id: str, current: int, total: int) -> None:
+    def _report_progress(self, job_id: str, current: int, total: int) -> bool:
+        """Report progress. Returns False if the job was cancelled server-side."""
         try:
             params = {"job_id": job_id, "current": current, "total": total}
-            self._api("post", f"/api/nodes/{self.node_id}/job-progress", params=params)
+            r = self._api("post", f"/api/nodes/{self.node_id}/job-progress", params=params)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("status") == "cancelled":
+                    logger.warning(f"Job {job_id} was cancelled by server")
+                    return False
+            return True
         except Exception:
             pass
 
@@ -364,7 +371,7 @@ class NodeAgent:
         # Set CUDA_VISIBLE_DEVICES for this process
         os.environ["CUDA_VISIBLE_DEVICES"] = str(self._gpu_indices[0])
 
-        from backend.job_queue import GPUJob, JobType
+        from backend.job_queue import GPUJob, JobStatus, JobType
         from backend.service import CorridorKeyService, InferenceParams, OutputConfig
 
         service = CorridorKeyService()
@@ -384,7 +391,10 @@ class NodeAgent:
         job.id = job_id
 
         def on_progress(cn: str, current: int, total: int) -> None:
-            self._report_progress(job_id, current, total)
+            if not self._report_progress(job_id, current, total):
+                # Server cancelled this job — set the cancel flag so
+                # the service layer's cancel check picks it up
+                job.status = JobStatus.CANCELLED
 
         def on_warning(message: str) -> None:
             logger.warning(f"Job {job_id}: {message}")
