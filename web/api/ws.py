@@ -11,12 +11,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger(__name__)
+
+# Global connection cap (prevents resource exhaustion via many accounts or unauthenticated mode)
+MAX_TOTAL_CONNECTIONS = int(os.environ.get("CK_MAX_WS_CONNECTIONS", "500").strip())
 
 
 @dataclass
@@ -27,6 +31,7 @@ class AuthenticatedConnection:
     user_id: str = ""
     org_ids: list[str] = field(default_factory=list)
     is_admin: bool = False
+    expires_at: float = 0  # JWT exp claim — 0 means no expiry check
 
 
 class ConnectionManager:
@@ -43,18 +48,31 @@ class ConnectionManager:
     MAX_CONNECTIONS_PER_USER = 3
 
     async def connect(
-        self, ws: WebSocket, user_id: str = "", org_ids: list[str] | None = None, is_admin: bool = False
-    ) -> None:
-        # Enforce per-user connection limit
+        self,
+        ws: WebSocket,
+        user_id: str = "",
+        org_ids: list[str] | None = None,
+        is_admin: bool = False,
+        expires_at: float = 0,
+    ) -> bool:
+        """Accept a WebSocket connection. Returns False if rejected."""
+        # Global connection limit
+        if MAX_TOTAL_CONNECTIONS > 0 and len(self._connections) >= MAX_TOTAL_CONNECTIONS:
+            await ws.close(code=4029, reason="Server connection limit reached")
+            return False
+        # Per-user connection limit
         if user_id and self.MAX_CONNECTIONS_PER_USER > 0:
             user_conns = sum(1 for c in self._connections if c.user_id == user_id)
             if user_conns >= self.MAX_CONNECTIONS_PER_USER:
                 await ws.close(code=4029, reason="Too many connections")
-                return
+                return False
         await ws.accept()
-        conn = AuthenticatedConnection(ws=ws, user_id=user_id, org_ids=org_ids or [], is_admin=is_admin)
+        conn = AuthenticatedConnection(
+            ws=ws, user_id=user_id, org_ids=org_ids or [], is_admin=is_admin, expires_at=expires_at
+        )
         self._connections.append(conn)
         logger.info(f"WebSocket connected ({len(self._connections)} total)")
+        return True
 
     def disconnect(self, ws: WebSocket) -> None:
         self._connections = [c for c in self._connections if c.ws is not ws]
@@ -68,10 +86,12 @@ class ConnectionManager:
         """Broadcast to connections, optionally filtered by org_id."""
         payload = json.dumps(message)
         dead: list[WebSocket] = []
-        for conn in self._connections:
-            # Admins see everything. Other users only see their orgs' events.
-            if org_id and not conn.is_admin and conn.org_ids and org_id not in conn.org_ids:
-                continue
+        for conn in list(self._connections):  # snapshot to avoid mutation during iteration
+            # Org filtering: admins see all, others only see their orgs' events.
+            # Empty org_ids means "sees nothing" (not "sees everything").
+            if org_id and not conn.is_admin:
+                if not conn.org_ids or org_id not in conn.org_ids:
+                    continue
             try:
                 await conn.ws.send_text(payload)
             except Exception:
@@ -126,14 +146,29 @@ class ConnectionManager:
             org_id=org_id,
         )
 
+    async def _broadcast_admin_only(self, message: dict[str, Any]) -> None:
+        """Broadcast only to admin connections."""
+        payload = json.dumps(message)
+        dead: list[WebSocket] = []
+        for conn in list(self._connections):
+            if not conn.is_admin:
+                continue
+            try:
+                await conn.ws.send_text(payload)
+            except Exception:
+                dead.append(conn.ws)
+        for ws in dead:
+            self.disconnect(ws)
+
     def send_vram_update(self, vram: dict) -> None:
-        # VRAM is server-level, no org filtering (only admins see it anyway)
-        self.broadcast_sync(
-            {
-                "type": "vram:update",
-                "data": vram,
-            }
-        )
+        if not self._connections or self._loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_admin_only({"type": "vram:update", "data": vram}), self._loop
+            )
+        except RuntimeError:
+            pass
 
     def send_node_update(self, node_data: dict, org_id: str | None = None) -> None:
         self.broadcast_sync(
@@ -175,11 +210,12 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     When CK_AUTH_ENABLED=true, requires ?token=<JWT> query parameter.
     When disabled, accepts all connections.
     """
-    from .auth import AUTH_ENABLED
+    from .auth import AUTH_ENABLED, TIER_HIERARCHY
 
     user_id = ""
     org_ids: list[str] = []
     tier = ""
+    expires_at: float = 0
 
     if AUTH_ENABLED:
         token = ws.query_params.get("token", "")
@@ -191,23 +227,63 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             await ws.close(code=4001, reason="Invalid token")
             return
         user_id = claims.get("sub", "")
+        if not user_id:
+            await ws.close(code=4001, reason="Invalid token")
+            return
+        expires_at = claims.get("exp", 0)
         app_metadata = claims.get("app_metadata", {})
         tier = app_metadata.get("tier", "pending")
-        # Look up org_ids from org store (JWT org_ids may be empty)
-        if user_id:
-            try:
-                from .orgs import get_org_store
 
-                org_ids = [o.org_id for o in get_org_store().list_user_orgs(user_id)]
-            except Exception:
-                org_ids = app_metadata.get("org_ids", [])
-        else:
+        # Cross-check tier against local store (matches HTTP middleware behavior)
+        try:
+            from .users import get_user_store
+
+            local_user = get_user_store().get_user(user_id)
+            if local_user and local_user.tier in TIER_HIERARCHY:
+                local_idx = TIER_HIERARCHY.index(local_user.tier)
+                jwt_idx = TIER_HIERARCHY.index(tier) if tier in TIER_HIERARCHY else -1
+                if local_idx < jwt_idx:
+                    tier = local_user.tier
+        except Exception:
+            pass
+
+        # Look up org_ids from org store (JWT org_ids may be stale)
+        try:
+            from .orgs import get_org_store
+
+            org_ids = [o.org_id for o in get_org_store().list_user_orgs(user_id)]
+        except Exception:
             org_ids = app_metadata.get("org_ids", [])
 
     is_admin = (tier == "platform_admin") if AUTH_ENABLED else True
-    await manager.connect(ws, user_id=user_id, org_ids=org_ids, is_admin=is_admin)
+    if not await manager.connect(ws, user_id=user_id, org_ids=org_ids, is_admin=is_admin, expires_at=expires_at):
+        return  # Connection was rejected (limit reached)
+
+    async def _expiry_watchdog():
+        """Close connection when JWT expires."""
+        if expires_at <= 0:
+            return
+        import time
+
+        while True:
+            remaining = expires_at - time.time()
+            if remaining <= 0:
+                try:
+                    await ws.close(code=4001, reason="Token expired")
+                except Exception:
+                    pass
+                return
+            await asyncio.sleep(min(remaining, 30.0))
+
+    watchdog = asyncio.create_task(_expiry_watchdog()) if expires_at > 0 else None
     try:
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.debug("WebSocket error", exc_info=True)
+    finally:
+        if watchdog and not watchdog.done():
+            watchdog.cancel()
         manager.disconnect(ws)
