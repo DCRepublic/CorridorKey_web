@@ -230,7 +230,9 @@
 	let collapsedProjects = $state<Set<string>>(new Set());
 
 	const VIDEO_EXTS = ['.mp4', '.mov', '.avi', '.mkv', '.mxf', '.webm', '.m4v'];
+	const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.exr', '.tif', '.tiff', '.bmp', '.dpx'];
 	const isVideo = (name: string) => VIDEO_EXTS.some(ext => name.toLowerCase().endsWith(ext));
+	const isImage = (name: string) => IMAGE_EXTS.some(ext => name.toLowerCase().endsWith(ext));
 	const isZip = (name: string) => name.toLowerCase().endsWith('.zip');
 
 	async function loadProjects() {
@@ -254,7 +256,21 @@
 		};
 		let lastUploadedClips: string[] = [];
 		try {
-			for (const file of files) {
+			// Batch image files together for a single upload
+			const imageFiles = Array.from(files).filter(f => isImage(f.name));
+			const otherFiles = Array.from(files).filter(f => !isImage(f.name));
+
+			if (imageFiles.length > 0) {
+				uploadProgress = 0;
+				const result = await api.upload.images(imageFiles, undefined, onProgress);
+				if (result?.clips) {
+					for (const c of result.clips) {
+						if (c.name) lastUploadedClips.push(c.name);
+					}
+				}
+			}
+
+			for (const file of otherFiles) {
 				let result: any;
 				uploadProgress = 0;
 				if (isVideo(file.name)) {
@@ -262,7 +278,7 @@
 				} else if (isZip(file.name)) {
 					result = await api.upload.frames(file, undefined, onProgress);
 				} else {
-					uploadError = `Unsupported: ${file.name}. Use videos (.mp4, .mov, etc.) or zipped frames (.zip).`;
+					uploadError = `Unsupported: ${file.name}. Use videos, images, or zipped frames.`;
 					continue;
 				}
 				// Track uploaded clip names for navigation
@@ -357,7 +373,7 @@
 			<label class="btn-accent" class:disabled={uploading}>
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v8M3 6l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 11h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
 				{uploading ? `Uploading ${uploadProgress}%` : 'Upload'}
-				<input type="file" accept=".mp4,.mov,.avi,.mkv,.mxf,.webm,.m4v,.zip" multiple hidden oninput={onFileInput} disabled={uploading} />
+				<input type="file" accept=".mp4,.mov,.avi,.mkv,.mxf,.webm,.m4v,.zip,.png,.jpg,.jpeg,.exr,.tif,.tiff,.bmp,.dpx" multiple hidden oninput={onFileInput} disabled={uploading} />
 			</label>
 			<button class="btn-ghost" onclick={loadProjects} disabled={loading} aria-label="Refresh clips">
 				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" class:spinning={loading}><path d="M12 7a5 5 0 11-1.5-3.5M12 2v3h-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>

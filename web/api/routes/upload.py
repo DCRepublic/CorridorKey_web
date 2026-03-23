@@ -217,6 +217,96 @@ async def upload_frames(file: UploadFile, request: Request, name: str | None = N
         finish_upload(request)
 
 
+@router.post("/images", summary="Upload image files")
+async def upload_images(request: Request, files: list[UploadFile], name: str | None = None):
+    """Upload one or more image files directly (no zip required).
+
+    Accepts PNG, JPG, EXR, TIFF, BMP, DPX files. Creates a new project
+    with the images in its Frames/ directory.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    # Validate all files are images
+    for f in files:
+        if not f.filename:
+            raise HTTPException(status_code=400, detail="File missing filename")
+        safe_name = os.path.basename(f.filename)
+        if not is_image_file(safe_name):
+            ext = os.path.splitext(safe_name)[1]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not a supported image format (got {ext}). "
+                "Supported: .png, .jpg, .jpeg, .exr, .tif, .tiff, .bmp, .dpx",
+            )
+
+    check_storage_quota(request)
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Save all uploaded images to temp dir
+            saved_files: list[str] = []
+            for f in files:
+                safe_name = os.path.basename(f.filename or "frame.png")
+                tmp_path = os.path.join(tmpdir, safe_name)
+                try:
+                    await _save_upload(f, tmp_path)
+                    saved_files.append(safe_name)
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail="Failed to save upload") from e
+
+            if not saved_files:
+                raise HTTPException(status_code=400, detail="No valid image files")
+
+            # Create project structure
+            from datetime import datetime
+
+            from backend.project import _dedupe_path, write_clip_json, write_project_json
+
+            # Derive clip name from the provided name, first filename, or "images"
+            first_name = name or os.path.splitext(saved_files[0])[0]
+            clip_name = sanitize_stem(first_name)
+            timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
+            folder_name = f"{timestamp}_{clip_name}"
+
+            root = resolve_clips_dir(request)
+            project_dir, _ = _dedupe_path(root, folder_name)
+            clips_dir = os.path.join(project_dir, "clips")
+            clip_dir, clip_name = _dedupe_path(clips_dir, clip_name)
+            frames_dir = os.path.join(clip_dir, "Frames")
+            os.makedirs(frames_dir, exist_ok=True)
+
+            for fname in sorted(saved_files):
+                src = os.path.join(tmpdir, fname)
+                dst = os.path.join(frames_dir, fname)
+                shutil.copy2(src, dst)
+
+            source_type = "uploaded_image" if len(saved_files) == 1 else "uploaded_frames"
+            write_clip_json(clip_dir, {"source": {"type": source_type, "file_count": len(saved_files)}})
+            write_project_json(
+                project_dir,
+                {
+                    "version": 2,
+                    "created": datetime.now().isoformat(),
+                    "display_name": clip_name.replace("_", " "),
+                    "clips": [clip_name],
+                },
+            )
+
+        service = get_service()
+        clips = service.scan_clips(resolve_clips_dir(request))
+        new_clips = [c for c in clips if c.root_path.startswith(project_dir)]
+
+        return {
+            "status": "ok",
+            "clips": [_clips_mod._clip_to_schema(c) for c in new_clips],
+            "frame_count": len(saved_files),
+        }
+    finally:
+        finish_upload(request)
+
+
 @router.post("/alpha/{clip_name}", summary="Upload alpha hint frames")
 async def upload_alpha_hint(clip_name: str, file: UploadFile, request: Request):
     """Upload alpha hint frames (zip) for an existing clip.
