@@ -189,9 +189,17 @@ def refresh_proxy(request: Request):
         raise HTTPException(status_code=401, detail="Token refresh failed") from e
 
 
+class ChangePasswordRequest(BaseModel):
+    password: str
+
+
 @router.put("/password")
-def change_password(request: Request):
-    """Proxy password change to GoTrue. Requires valid JWT."""
+def change_password(req: ChangePasswordRequest, request: Request):
+    """Proxy password change to GoTrue. Requires valid JWT.
+
+    Only forwards the password field — GoTrue's PUT /user also accepts
+    email/phone/metadata, which we don't allow changing through this endpoint.
+    """
     import urllib.request
 
     from ..auth import _decode_jwt
@@ -204,22 +212,19 @@ def change_password(request: Request):
     # Validate the JWT before forwarding to GoTrue
     _decode_jwt(auth_header[7:])
 
-    try:
-        import asyncio
-
-        body = asyncio.get_event_loop().run_until_complete(request.body())
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid request body") from None
+    # Only forward the password field — prevent email/metadata injection
+    safe_body = json.dumps({"password": req.password}).encode()
 
     try:
         gotrue_req = urllib.request.Request(
             f"{gotrue_url}/user",
-            data=body,
+            data=safe_body,
             headers={"Content-Type": "application/json", "Authorization": auth_header},
             method="PUT",
         )
         with urllib.request.urlopen(gotrue_req, timeout=10) as resp:
-            return json.loads(resp.read())
+            resp.read()  # consume response but don't return GoTrue internals
+        return {"status": "updated"}
     except Exception as e:
         logger.error(f"GoTrue password change error: {e}")
         raise HTTPException(status_code=400, detail="Password change failed") from e
@@ -257,10 +262,8 @@ def validate_invite_token(token: str):
     storage = get_storage()
     invites = storage.get_invite_tokens()
     invite = invites.get(token)
-    if not invite:
-        raise HTTPException(status_code=404, detail="Invalid invite token")
-    if invite.get("used"):
-        raise HTTPException(status_code=409, detail="Invite token already used")
+    if not invite or invite.get("used"):
+        raise HTTPException(status_code=400, detail="Invalid or expired invite token")
     return {"valid": True}
 
 
@@ -277,10 +280,8 @@ def consume_invite_token(token: str, email: str):
     # Atomic read-check-write: reload fresh state before each write
     invites = storage.get_invite_tokens()
     invite = invites.get(token)
-    if not invite:
-        raise HTTPException(status_code=404, detail="Invalid invite token")
-    if invite.get("used"):
-        raise HTTPException(status_code=409, detail="Invite token already used")
+    if not invite or invite.get("used"):
+        raise HTTPException(status_code=400, detail="Invalid or expired invite token")
     invite["used"] = True
     invite["used_by"] = email
     invite["used_at"] = time.time()
@@ -311,70 +312,73 @@ def signup_with_invite(req: SignupRequest):
     if not req.invite_token:
         raise HTTPException(status_code=400, detail="Invite token required")
 
-    # Validate invite
+    # Validate and consume invite atomically BEFORE calling GoTrue.
+    # This prevents TOCTOU: two concurrent signups with the same invite
+    # would both pass validation, then both create GoTrue accounts.
     storage = get_storage()
     invites = storage.get_invite_tokens()
     invite = invites.get(req.invite_token)
     if not invite:
-        raise HTTPException(status_code=404, detail="Invalid invite token")
+        raise HTTPException(status_code=400, detail="Invalid or expired invite token")
     if invite.get("used"):
-        raise HTTPException(status_code=409, detail="Invite token already used")
+        raise HTTPException(status_code=400, detail="Invalid or expired invite token")
+
+    # Mark consumed before GoTrue call — revert on failure
+    invite["used"] = True
+    invite["used_by"] = req.email
+    invite["used_at"] = time.time()
+    storage.save_invite_token(req.invite_token, invite)
 
     # Create user via GoTrue admin API (use internal URL for server-to-server)
     gotrue_url = os.environ.get("CK_GOTRUE_INTERNAL_URL", os.environ.get("CK_GOTRUE_URL", "http://localhost:54324")).strip()
     service_key = os.environ.get("CK_SUPABASE_SERVICE_KEY", "").strip()
 
-    if service_key:
-        # Use admin API (bypasses DISABLE_SIGNUP)
-        import urllib.request
+    try:
+        if service_key:
+            # Use admin API (bypasses DISABLE_SIGNUP)
+            import urllib.request
 
-        admin_body = json.dumps({
-            "email": req.email,
-            "password": req.password,
-            "email_confirm": True,
-            "app_metadata": {"tier": "pending"},
-            "user_metadata": {"name": req.name},
-        }).encode()
-        admin_req = urllib.request.Request(
-            f"{gotrue_url}/admin/users",
-            data=admin_body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {service_key}",
-            },
-            method="POST",
-        )
-        try:
+            admin_body = json.dumps({
+                "email": req.email,
+                "password": req.password,
+                "email_confirm": True,
+                "app_metadata": {"tier": "pending"},
+                "user_metadata": {"name": req.name},
+            }).encode()
+            admin_req = urllib.request.Request(
+                f"{gotrue_url}/admin/users",
+                data=admin_body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {service_key}",
+                },
+                method="POST",
+            )
             with urllib.request.urlopen(admin_req, timeout=10) as resp:
                 user_data = json.loads(resp.read())
                 user_id = user_data.get("id", req.email)
-        except Exception as e:
-            logger.error(f"GoTrue admin API error: {e}")
-            raise HTTPException(status_code=502, detail="Failed to create user account") from e
-    else:
-        # Fallback: direct signup (only works if DISABLE_SIGNUP=false)
-        import urllib.request
+        else:
+            # Fallback: direct signup (only works if DISABLE_SIGNUP=false)
+            import urllib.request
 
-        signup_body = json.dumps({"email": req.email, "password": req.password}).encode()
-        signup_req = urllib.request.Request(
-            f"{gotrue_url}/signup",
-            data=signup_body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
+            signup_body = json.dumps({"email": req.email, "password": req.password}).encode()
+            signup_req = urllib.request.Request(
+                f"{gotrue_url}/signup",
+                data=signup_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
             with urllib.request.urlopen(signup_req, timeout=10) as resp:
                 user_data = json.loads(resp.read())
                 user_id = user_data.get("user", {}).get("id", req.email)
-        except Exception as e:
-            logger.error(f"GoTrue signup error: {e}")
-            raise HTTPException(status_code=502, detail="Failed to create user account") from e
-
-    # Consume invite
-    invite["used"] = True
-    invite["used_by"] = req.email
-    invite["used_at"] = time.time()
-    storage.save_invite_token(req.invite_token, invite)
+    except Exception as e:
+        # Revert invite consumption so the token can be used again
+        invite["used"] = False
+        invite.pop("used_by", None)
+        invite.pop("used_at", None)
+        storage.save_invite_token(req.invite_token, invite)
+        logger.error(f"GoTrue signup error: {e}")
+        raise HTTPException(status_code=502, detail="Failed to create user account") from e
 
     # Record for approval workflow
     user_store = get_user_store()

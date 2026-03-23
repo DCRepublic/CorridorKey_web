@@ -65,7 +65,8 @@ _init_docs_paths()
 PUBLIC_PREFIXES = (
     "/_app/",  # SvelteKit static assets
     "/ws",  # WebSocket (has its own auth, CRKY-13)
-    "/api/auth/invite/",  # Invite validation + consumption (pre/post-signup)
+    "/api/auth/invite/validate",  # Invite validation (pre-signup, unauthenticated)
+    "/api/auth/invite/consume",  # Invite consumption (post-signup, unauthenticated)
     "/api/nodes/",  # Nodes use CK_AUTH_TOKEN, not JWT
     "/api/system/weights/",  # Weight sync for nodes
 )
