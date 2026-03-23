@@ -371,6 +371,52 @@ def retry_shard_group(group_id: str, request: Request):
     }
 
 
+def _build_gvm_jobs(clip_name: str, frame_count: int, extra_params: dict | None = None) -> list[GPUJob]:
+    """Build GVM jobs for a clip, auto-sharding across available GPUs.
+
+    Returns a list of GPUJob objects (sharded or single). Caller is
+    responsible for stamping and submitting them.
+    """
+    from ..worker import get_local_gpu_enabled
+
+    available = 0
+    if get_local_gpu_enabled():
+        available += 1
+    online_nodes = [
+        n for n in registry.list_nodes()
+        if n.can_accept_jobs and n.accepts_job_type("gvm_alpha") and n.status != "busy"
+    ]
+    available += len(online_nodes)
+
+    min_shard = 20
+    params = dict(extra_params) if extra_params else {}
+
+    if available > 1 and frame_count > min_shard:
+        num_shards = min(available, frame_count // min_shard)
+        if num_shards > 1:
+            group_id = uuid.uuid4().hex[:8]
+            base = frame_count // num_shards
+            remainder = frame_count % num_shards
+            cursor = 0
+            jobs = []
+            for i in range(num_shards):
+                size = base + (1 if i < remainder else 0)
+                job = GPUJob(
+                    job_type=JobType.GVM_ALPHA,
+                    clip_name=clip_name,
+                    params={**params, "frame_range": [cursor, cursor + size]},
+                    shard_group=group_id,
+                    shard_index=i,
+                    shard_total=num_shards,
+                )
+                jobs.append(job)
+                cursor += size
+            return jobs
+
+    # Single node — not enough GPUs to shard
+    return [GPUJob(job_type=JobType.GVM_ALPHA, clip_name=clip_name, params=params)]
+
+
 @router.post("/gvm", response_model=list[JobSchema], summary="Submit GVM alpha generation")
 def submit_gvm(req: GVMJobRequest, request: Request):
     """Generate alpha hints using Generative Video Matting.
@@ -384,56 +430,19 @@ def submit_gvm(req: GVMJobRequest, request: Request):
     submitted = []
 
     from ..org_isolation import resolve_clips_dir
-    from ..worker import get_local_gpu_enabled
 
     clips = service.scan_clips(resolve_clips_dir(request))
     clip_map = {c.name: c for c in clips}
-
-    available = 0
-    if get_local_gpu_enabled():
-        available += 1
-    online_nodes = [
-        n for n in registry.list_nodes()
-        if n.can_accept_jobs and n.accepts_job_type("gvm_alpha") and n.status != "busy"
-    ]
-    available += len(online_nodes)
 
     for clip_name in req.clip_names:
         clip = clip_map.get(clip_name)
         if clip is None:
             continue
         frame_count = clip.input_asset.frame_count if clip.input_asset else 0
-
-        min_shard = 20
-
-        if available > 1 and frame_count > min_shard:
-            num_shards = min(available, frame_count // min_shard)
-            if num_shards > 1:
-                group_id = uuid.uuid4().hex[:8]
-                base = frame_count // num_shards
-                remainder = frame_count % num_shards
-                cursor = 0
-                for i in range(num_shards):
-                    size = base + (1 if i < remainder else 0)
-                    job = GPUJob(
-                        job_type=JobType.GVM_ALPHA,
-                        clip_name=clip_name,
-                        params={"frame_range": [cursor, cursor + size]},
-                        shard_group=group_id,
-                        shard_index=i,
-                        shard_total=num_shards,
-                    )
-                    _stamp_job(job, request)
-                    if queue.submit(job):
-                        submitted.append(_job_to_schema(job))
-                    cursor += size
-                continue
-
-        # Single node — not enough GPUs to shard
-        job = GPUJob(job_type=JobType.GVM_ALPHA, clip_name=clip_name)
-        _stamp_job(job, request)
-        if queue.submit(job):
-            submitted.append(_job_to_schema(job))
+        for job in _build_gvm_jobs(clip_name, frame_count):
+            _stamp_job(job, request)
+            if queue.submit(job):
+                submitted.append(_job_to_schema(job))
 
     if not submitted:
         raise HTTPException(status_code=409, detail="All jobs rejected (duplicates)")
@@ -492,31 +501,32 @@ def submit_pipeline(req: PipelineJobRequest, request: Request):
         state = clip.state.value
 
         if state == "EXTRACTING":
-            job = GPUJob(job_type=JobType.VIDEO_EXTRACT, clip_name=clip_name, params=pipeline_params)
+            jobs = [GPUJob(job_type=JobType.VIDEO_EXTRACT, clip_name=clip_name, params=pipeline_params)]
         elif state == "RAW":
             if req.alpha_method == "videomama":
-                job = GPUJob(
+                jobs = [GPUJob(
                     job_type=JobType.VIDEOMAMA_ALPHA,
                     clip_name=clip_name,
                     params={**pipeline_params, "chunk_size": 50},
-                )
+                )]
             else:
-                job = GPUJob(job_type=JobType.GVM_ALPHA, clip_name=clip_name, params=pipeline_params)
+                frame_count = clip.input_asset.frame_count if clip.input_asset else 0
+                jobs = _build_gvm_jobs(clip_name, frame_count, extra_params=pipeline_params)
         elif state == "MASKED":
-            # MASKED clips already have a mask — run VideoMaMa to generate alpha, then inference
-            job = GPUJob(
+            jobs = [GPUJob(
                 job_type=JobType.VIDEOMAMA_ALPHA,
                 clip_name=clip_name,
                 params={**pipeline_params, "chunk_size": 50},
-            )
+            )]
         elif state in ("READY", "COMPLETE"):
-            job = GPUJob(job_type=JobType.INFERENCE, clip_name=clip_name, params=pipeline_params)
+            jobs = [GPUJob(job_type=JobType.INFERENCE, clip_name=clip_name, params=pipeline_params)]
         else:
             continue
 
-        _stamp_job(job, request)
-        if queue.submit(job):
-            submitted.append(_job_to_schema(job))
+        for job in jobs:
+            _stamp_job(job, request)
+            if queue.submit(job):
+                submitted.append(_job_to_schema(job))
 
     if not submitted:
         raise HTTPException(status_code=409, detail="No jobs submitted (clips may already be complete or duplicates)")
