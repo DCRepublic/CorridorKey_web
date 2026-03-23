@@ -115,7 +115,12 @@ def check_storage_quota(request: Request, additional_bytes: int = 0) -> None:
     if user.is_admin:
         return
 
-    # Concurrent upload limit
+    org_store = get_org_store()
+    user_orgs = org_store.list_user_orgs(user.user_id)
+    if not user_orgs:
+        return  # No org — no quota to check, no slot to track
+
+    # Concurrent upload limit (after org check to avoid slot leak for org-less users)
     if _MAX_CONCURRENT_UPLOADS > 0:
         with _upload_lock:
             current = _active_uploads.get(user.user_id, 0)
@@ -126,11 +131,6 @@ def check_storage_quota(request: Request, additional_bytes: int = 0) -> None:
                     "Wait for current uploads to finish.",
                 )
             _active_uploads[user.user_id] = current + 1
-
-    org_store = get_org_store()
-    user_orgs = org_store.list_user_orgs(user.user_id)
-    if not user_orgs:
-        return
 
     org = user_orgs[0]
     used = get_org_disk_usage(org.org_id)

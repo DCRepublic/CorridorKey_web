@@ -35,14 +35,21 @@ def safe_join(base: str, *parts: str) -> str:
     return resolved
 
 
+_MAX_ZIP_MEMBERS = 50_000  # sane limit for VFX sequences
+_MAX_EXTRACTED_BYTES = 20 * 1024**3  # 20 GB decompressed limit
+
+
 def safe_extract_zip(zf: zipfile.ZipFile, target_dir: str) -> list[str]:
     """Extract a zip file safely, preventing zip slip.
 
     Validates each member's resolved path stays within target_dir.
+    Enforces limits on member count and total decompressed size.
     Returns the list of extracted file paths.
     """
     target_resolved = os.path.realpath(target_dir)
     extracted = []
+    total_bytes = 0
+    file_count = 0
 
     for member in zf.infolist():
         # Skip directories
@@ -50,25 +57,35 @@ def safe_extract_zip(zf: zipfile.ZipFile, target_dir: str) -> list[str]:
             member_dir = os.path.join(target_dir, member.filename)
             resolved = os.path.realpath(member_dir)
             if not (resolved == target_resolved or resolved.startswith(target_resolved + os.sep)):
-                raise HTTPException(status_code=400, detail=f"Zip slip detected: {member.filename}")
+                raise HTTPException(status_code=400, detail="Zip slip detected")
             os.makedirs(resolved, exist_ok=True)
             continue
+
+        file_count += 1
+        if file_count > _MAX_ZIP_MEMBERS:
+            raise HTTPException(status_code=400, detail=f"Zip contains too many files (max {_MAX_ZIP_MEMBERS})")
 
         # Validate file path
         member_path = os.path.join(target_dir, member.filename)
         resolved = os.path.realpath(member_path)
         if not resolved.startswith(target_resolved + os.sep):
-            raise HTTPException(status_code=400, detail=f"Zip slip detected: {member.filename}")
+            raise HTTPException(status_code=400, detail="Zip slip detected")
 
         # Ensure parent directory exists
         os.makedirs(os.path.dirname(resolved), exist_ok=True)
 
-        # Extract single member
+        # Extract single member with decompressed size tracking
         with zf.open(member) as src, open(resolved, "wb") as dst:
             while True:
                 chunk = src.read(8 * 1024 * 1024)
                 if not chunk:
                     break
+                total_bytes += len(chunk)
+                if total_bytes > _MAX_EXTRACTED_BYTES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Zip decompressed size exceeds limit ({_MAX_EXTRACTED_BYTES // (1024**3)} GB)",
+                    )
                 dst.write(chunk)
 
         extracted.append(resolved)
