@@ -129,6 +129,7 @@ async def upload_frames(file: UploadFile, request: Request, name: str | None = N
     top level or in a single subdirectory. They'll be placed into
     a new project's Frames/ directory.
     """
+    check_storage_quota(request)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
@@ -216,6 +217,7 @@ async def upload_alpha_hint(clip_name: str, file: UploadFile, request: Request):
     Extracts images into the clip's AlphaHint/ directory.
     Transitions clip from RAW -> READY.
     """
+    check_storage_quota(request)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
@@ -279,6 +281,7 @@ async def upload_videomama_mask(clip_name: str, file: UploadFile, request: Reque
     Extracts images into the clip's VideoMamaMaskHint/ directory.
     Transitions clip to MASKED state.
     """
+    check_storage_quota(request)
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 

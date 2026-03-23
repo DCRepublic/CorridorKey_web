@@ -65,6 +65,9 @@ async function uploadRequest<T>(path: string, form: FormData): Promise<T> {
 		res = retry;
 	}
 	if (!res.ok) {
+		if (res.status === 413) {
+			throw new Error('File too large. The server or CDN may limit upload size (Cloudflare free: 100MB). Try compressing your video or using a ZIP of frames.');
+		}
 		const detail = await res.json().catch(() => ({ detail: res.statusText }));
 		throw new Error(detail.detail || res.statusText);
 	}
