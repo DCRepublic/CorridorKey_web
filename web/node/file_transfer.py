@@ -185,7 +185,7 @@ class FileTransfer:
                         raise
 
             _with_retry(_do_download, f"Download {fname}")
-                count += 1
+            count += 1
 
         logger.info(f"Downloaded {count} files for {clip_name}/{pass_name} → {directory}/")
         return count
