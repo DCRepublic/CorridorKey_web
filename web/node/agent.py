@@ -249,6 +249,17 @@ class NodeAgent:
         except Exception:
             pass
 
+    def _is_cancelled(self, job_id: str) -> bool:
+        """Quick check if a job was cancelled server-side (reuses progress endpoint)."""
+        try:
+            params = {"job_id": job_id, "current": 0, "total": 0}
+            r = self._api("post", f"/api/nodes/{self.node_id}/job-progress", params=params)
+            if r.status_code == 200:
+                return r.json().get("status") == "cancelled"
+        except Exception:
+            pass
+        return False
+
     def _report_result(self, job_id: str, status: str, error: str | None = None) -> None:
         try:
             payload = {"job_id": job_id, "status": status, "error_message": error}
@@ -292,9 +303,17 @@ class NodeAgent:
         else:
             self._run_subprocess_gpu(job_data, clips_dir, gpu_index)
 
+        # Check cancellation before uploading (avoid wasting bandwidth)
+        if self._is_cancelled(job_id):
+            logger.info(f"Job {job_id} cancelled before upload — skipping result upload")
+            if not use_shared and clips_dir:
+                self._cleanup_temp(clips_dir)
+            self._report_result(job_id, "cancelled")
+            return
+
         # Upload results BEFORE reporting completion
         if not use_shared and clips_dir:
-            self._upload_results(clip_name, clips_dir, job_type=job_data.get("job_type", ""))
+            self._upload_results(clip_name, clips_dir, job_type=job_data.get("job_type", ""), job_id=job_id)
             self._cleanup_temp(clips_dir)
 
         # Only report completed after results are uploaded to the server
@@ -348,8 +367,8 @@ class NodeAgent:
 
         return base_dir
 
-    def _upload_results(self, clip_name: str, clips_dir: str, job_type: str = "") -> None:
-        """Upload output files back to the main machine."""
+    def _upload_results(self, clip_name: str, clips_dir: str, job_type: str = "", job_id: str = "") -> None:
+        """Upload output files back to the main machine. Checks cancellation between passes."""
         clip_dir = os.path.join(clips_dir, clip_name)
 
         # Inference outputs
@@ -365,6 +384,10 @@ class NodeAgent:
 
         for pass_name, dir_path in output_map.items():
             if os.path.isdir(dir_path):
+                # Check cancellation between passes to bail out early
+                if job_id and self._is_cancelled(job_id):
+                    logger.info(f"Job {job_id} cancelled during upload — aborting remaining passes")
+                    return
                 self.file_transfer.upload_directory(clip_name, pass_name, dir_path)
 
     def _cleanup_temp(self, clips_dir: str) -> None:
