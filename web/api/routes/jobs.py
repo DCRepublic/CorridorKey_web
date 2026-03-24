@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from backend.job_queue import GPUJob, JobType
 
 from ..auth import get_current_user
-from ..credit_guard import check_credit_balance
+from ..credit_guard import check_credit_balance, estimate_gpu_seconds
 from ..deps import get_queue, get_service
 from ..nodes import registry
 from ..schemas import (
@@ -29,15 +29,17 @@ from ..tier_guard import require_admin, require_member
 router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_member)])
 
 
-def _stamp_job(job: GPUJob, request: Request | None) -> GPUJob:
+def _stamp_job(job: GPUJob, request: Request | None, estimated_seconds: float = 0) -> GPUJob:
     """Set submitted_by and org_id from the authenticated user (CRKY-66).
 
     Also checks GPU credit balance before allowing submission (CRKY-37).
+    Estimated_seconds is the projected GPU cost — if submitting this job
+    would push the org over the credit ratio, it's rejected.
     """
     if request is None:
         return job
-    # Check credit balance before allowing job (CRKY-37)
-    check_credit_balance(request)
+    # Check credit balance with projected cost (CRKY-37)
+    check_credit_balance(request, estimated_seconds=estimated_seconds)
     user = get_current_user(request)
     if user:
         job.submitted_by = user.user_id
@@ -103,52 +105,14 @@ def _job_to_schema(job: GPUJob) -> JobSchema:
 
 @router.get("/estimate", summary="Estimate GPU cost")
 def estimate_job_cost(job_type: str = "inference", frame_count: int = 0, num_shards: int = 1):
-    """Estimate GPU cost for a job based on historical data (CRKY-34).
+    """Estimate GPU cost for a job based on historical data (CRKY-34)."""
+    from ..credit_guard import _DEFAULT_SPF
 
-    Returns estimated GPU-seconds, GPU-minutes, and wall-clock time.
-    """
-    # Default estimates per job type (used when no history available)
-    defaults = {
-        "inference": 1.5,   # ~1.5s per frame on RTX 3090, ~0.5s on RTX 4090
-        "gvm_alpha": 2.5,   # ~2.5s per frame (heavy diffusion model)
-        "videomama_alpha": 1.5,
-        "video_extract": 0.05,
-        "video_stitch": 0.02,
-    }
-
-    if job_type not in defaults:
+    if job_type not in _DEFAULT_SPF:
         raise HTTPException(status_code=400, detail=f"Unknown job type: {job_type}")
 
-    queue = get_queue()
-    history = queue.history_snapshot
-
-    # Compute median seconds-per-frame from completed jobs with valid timing
-    completed = [
-        j for j in history
-        if j.status.value == "completed"
-        and j.job_type.value == job_type
-        and j.total_frames > 0
-        and j.started_at > 0
-        and j.completed_at > j.started_at
-    ]
-
-    if completed:
-        # Per-job seconds-per-frame, capped at 60s/frame to filter outliers
-        spf_values = []
-        for j in completed:
-            duration = j.completed_at - j.started_at
-            spf = duration / j.total_frames
-            if spf < 60:  # ignore jobs where download/upload dominated
-                spf_values.append(spf)
-        if spf_values:
-            spf_values.sort()
-            avg_spf = spf_values[len(spf_values) // 2]  # median
-        else:
-            avg_spf = defaults.get(job_type, 1.0)
-    else:
-        avg_spf = defaults.get(job_type, 1.0)
-
-    estimated_seconds = avg_spf * frame_count
+    estimated_seconds = estimate_gpu_seconds(job_type, frame_count)
+    avg_spf = estimated_seconds / max(1, frame_count)
     wall_clock = estimated_seconds / max(1, num_shards)
 
     return {
@@ -159,7 +123,6 @@ def estimate_job_cost(job_type: str = "inference", frame_count: int = 0, num_sha
         "estimated_gpu_seconds": round(estimated_seconds, 1),
         "estimated_gpu_minutes": round(estimated_seconds / 60, 1),
         "estimated_wall_clock_seconds": round(wall_clock, 1),
-        "based_on_history": len(completed) if completed else 0,
     }
 
 
@@ -198,9 +161,19 @@ def list_jobs(request: Request):
 @router.post("/inference", response_model=list[JobSchema], summary="Submit inference job")
 def submit_inference(req: InferenceJobRequest, request: Request):
     """Submit CorridorKey inference for one or more clips. Requires alpha hints to be ready."""
+    from ..org_isolation import resolve_clips_dir
+
     queue = get_queue()
+    service = get_service()
+    clips = service.scan_clips(resolve_clips_dir(request))
+    clip_map = {c.name: c for c in clips}
+
     submitted = []
     for clip_name in req.clip_names:
+        clip = clip_map.get(clip_name)
+        frame_count = clip.input_asset.frame_count if clip and clip.input_asset else 0
+        est = estimate_gpu_seconds("inference", frame_count)
+
         job = GPUJob(
             job_type=JobType.INFERENCE,
             clip_name=clip_name,
@@ -210,7 +183,7 @@ def submit_inference(req: InferenceJobRequest, request: Request):
                 "frame_range": list(req.frame_range) if req.frame_range else None,
             },
         )
-        _stamp_job(job, request)
+        _stamp_job(job, request, estimated_seconds=est)
         if queue.submit(job):
             submitted.append(_job_to_schema(job))
     if not submitted:
@@ -439,8 +412,9 @@ def submit_gvm(req: GVMJobRequest, request: Request):
         if clip is None:
             continue
         frame_count = clip.input_asset.frame_count if clip.input_asset else 0
+        est = estimate_gpu_seconds("gvm_alpha", frame_count)
         for job in _build_gvm_jobs(clip_name, frame_count):
-            _stamp_job(job, request)
+            _stamp_job(job, request, estimated_seconds=est)
             if queue.submit(job):
                 submitted.append(_job_to_schema(job))
 
@@ -452,15 +426,25 @@ def submit_gvm(req: GVMJobRequest, request: Request):
 @router.post("/videomama", response_model=list[JobSchema], summary="Submit VideoMaMa alpha generation")
 def submit_videomama(req: VideoMaMaJobRequest, request: Request):
     """Generate alpha hints using VideoMaMa mask-driven matting for one or more clips."""
+    from ..org_isolation import resolve_clips_dir
+
     queue = get_queue()
+    service = get_service()
+    clips = service.scan_clips(resolve_clips_dir(request))
+    clip_map = {c.name: c for c in clips}
+
     submitted = []
     for clip_name in req.clip_names:
+        clip = clip_map.get(clip_name)
+        frame_count = clip.input_asset.frame_count if clip and clip.input_asset else 0
+        est = estimate_gpu_seconds("videomama_alpha", frame_count)
+
         job = GPUJob(
             job_type=JobType.VIDEOMAMA_ALPHA,
             clip_name=clip_name,
             params={"chunk_size": req.chunk_size},
         )
-        _stamp_job(job, request)
+        _stamp_job(job, request, estimated_seconds=est)
         if queue.submit(job):
             submitted.append(_job_to_schema(job))
     if not submitted:
@@ -523,8 +507,22 @@ def submit_pipeline(req: PipelineJobRequest, request: Request):
         else:
             continue
 
+        # Estimate the FULL remaining pipeline cost, not just this step.
+        # The pipeline auto-chains, so we need to project the total.
+        frame_count = clip.input_asset.frame_count if clip.input_asset else 0
+        est = 0.0
+        if state in ("EXTRACTING", "RAW"):
+            est += estimate_gpu_seconds("gvm_alpha", frame_count)
+            est += estimate_gpu_seconds("inference", frame_count)
+        elif state in ("MASKED",):
+            est += estimate_gpu_seconds("videomama_alpha", frame_count)
+            est += estimate_gpu_seconds("inference", frame_count)
+        elif state in ("READY", "COMPLETE"):
+            est += estimate_gpu_seconds("inference", frame_count)
+
         for job in jobs:
-            _stamp_job(job, request)
+            _stamp_job(job, request, estimated_seconds=est)
+            est = 0  # only charge once for the whole pipeline
             if queue.submit(job):
                 submitted.append(_job_to_schema(job))
 
