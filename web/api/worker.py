@@ -301,6 +301,16 @@ def _run_job(service: CorridorKeyService, job: GPUJob, queue: GPUJobQueue, clips
     except JobCancelledError:
         queue.mark_cancelled(job)
         manager.send_job_status(job.id, JobStatus.CANCELLED.value, org_id=job.org_id)
+        # Credit partial GPU time consumed before cancellation
+        if job.started_at > 0 and job.org_id:
+            import time as _t
+
+            elapsed = _t.time() - job.started_at
+            if elapsed > 0:
+                from .gpu_credits import add_consumed
+
+                add_consumed(job.org_id, elapsed)
+                logger.info(f"Credit tracking (cancelled): {elapsed:.1f}s consumed by org {job.org_id}")
         from .app import _save_history_snapshot
 
         _save_history_snapshot(queue)

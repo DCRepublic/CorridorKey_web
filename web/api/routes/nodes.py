@@ -571,37 +571,41 @@ def report_job_result(node_id: str, req: JobResultRequest, request: Request):
         raise HTTPException(status_code=403, detail="Job is assigned to a different node")
 
     oid = job.org_id
-    if req.status == "completed":
-        queue.complete_job(job)
-        manager.send_job_status(job.id, JobStatus.COMPLETED.value, org_id=oid)
 
-        # Credit the node's org for contributed GPU time (verified server-side)
-        import time
+    import time
 
-        node = registry.get_node(node_id)
-        elapsed = time.time() - job.started_at if job.started_at else 0
-        if elapsed > 0 and node and node.org_id:
-            # Only credit if the node's org matches the job's org (or node is shared)
-            if not job.org_id or job.org_id == node.org_id or node.visibility == "shared":
-                from ..gpu_credits import add_contributed
+    node = registry.get_node(node_id)
+    elapsed = time.time() - job.started_at if job.started_at else 0
 
-                add_contributed(node.org_id, elapsed)
-                logger.info(f"Credit: +{elapsed:.1f}s by node {node_id} -> org {node.org_id}")
-            else:
-                logger.warning(
-                    f"Credit denied: node {node_id} (org {node.org_id}) "
-                    f"completed job for org {job.org_id}"
-                )
+    if req.status == "completed" or req.status == "cancelled":
+        queue.complete_job(job) if req.status == "completed" else queue.mark_cancelled(job)
+        status_val = JobStatus.COMPLETED.value if req.status == "completed" else JobStatus.CANCELLED.value
+        manager.send_job_status(job.id, status_val, org_id=oid)
 
-        # Update reputation (CRKY-30)
-        from ..node_reputation import record_job_completed
+        # Credit/charge GPU time for completed AND cancelled (user got partial output).
+        # Failed jobs are not charged — system fault, no usable output.
+        if elapsed > 0:
+            if job.org_id:
+                from ..gpu_credits import add_consumed
 
-        record_job_completed(node_id, job.total_frames, elapsed)
+                add_consumed(job.org_id, elapsed)
+                logger.info(f"Credit: {elapsed:.1f}s consumed by org {job.org_id} ({req.status})")
+            if node and node.org_id:
+                if not job.org_id or job.org_id == node.org_id or node.visibility == "shared":
+                    from ..gpu_credits import add_contributed
+
+                    add_contributed(node.org_id, elapsed)
+                    logger.info(f"Credit: +{elapsed:.1f}s by node {node_id} -> org {node.org_id}")
+
+        if req.status == "completed":
+            from ..node_reputation import record_job_completed
+
+            record_job_completed(node_id, job.total_frames, elapsed)
     else:
+        # Failed — no credit charge (system fault)
         error_detail = req.error_message or "Unknown error"
-        queue.fail_job(job, error_detail)  # full detail in server-side history
+        queue.fail_job(job, error_detail)
         manager.send_job_status(job.id, JobStatus.FAILED.value, error="Remote processing error", org_id=oid)
-        # Update reputation (CRKY-30)
         from ..node_reputation import record_job_failed
 
         record_job_failed(node_id)
