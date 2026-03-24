@@ -544,11 +544,14 @@ def report_job_progress(node_id: str, job_id: str, current: int, total: int, req
         # Verify this node is assigned to the job
         if job.claimed_by and job.claimed_by != node_id:
             raise HTTPException(status_code=403, detail="Job is assigned to a different node")
-        job.current_frame = current
-        job.total_frames = total
+        # Don't overwrite real frame counts with zeros (cancel check sends 0,0)
+        if current > 0 or total > 0:
+            job.current_frame = current
+            job.total_frames = total
     oid = job.org_id if job else None
     cancelled = job.status.value == "cancelled" if job else False
-    manager.send_job_progress(job_id, "", current, total, org_id=oid)
+    if current > 0 or total > 0:
+        manager.send_job_progress(job_id, "", current, total, org_id=oid)
     return {"status": "cancelled" if cancelled else "ok"}
 
 
