@@ -236,12 +236,28 @@ def _chain_next_pipeline_step(job: GPUJob, queue: GPUJobQueue, clips_dir: str, s
     # If this job is part of a shard group, wait until ALL shards are done
     # before chaining the next step. Otherwise each shard would independently
     # try to chain, causing duplicate submissions or partial processing.
-    if job.shard_group and not queue.shard_group_all_done(job.shard_group):
-        logger.debug(
-            f"Pipeline chain: waiting for shard group {job.shard_group} to complete "
-            f"before chaining next step for '{job.clip_name}'"
-        )
-        return
+    if job.shard_group:
+        if not queue.shard_group_all_done(job.shard_group):
+            logger.debug(
+                f"Pipeline chain: waiting for shard group {job.shard_group} to complete "
+                f"before chaining next step for '{job.clip_name}'"
+            )
+            return
+        # Check if any shards failed — don't chain on incomplete results
+        progress = queue.shard_group_progress(job.shard_group)
+        if progress.get("failed", 0) > 0 or progress.get("cancelled", 0) > 0:
+            logger.warning(
+                f"Pipeline chain: shard group {job.shard_group} has failures/cancellations "
+                f"({progress.get('failed', 0)} failed, {progress.get('cancelled', 0)} cancelled), "
+                f"skipping next step for '{job.clip_name}'"
+            )
+            manager.send_job_warning(
+                job.id,
+                f"Pipeline stopped: {progress.get('failed', 0)} shard(s) failed. "
+                f"Retry failed shards or re-run the pipeline.",
+                org_id=job.org_id,
+            )
+            return
 
     next_jobs: list[GPUJob] = []
     frame_count = clip.input_asset.frame_count if clip.input_asset else 0
@@ -265,6 +281,23 @@ def _chain_next_pipeline_step(job: GPUJob, queue: GPUJobQueue, clips_dir: str, s
         from .routes.jobs import _build_inference_shards
 
         next_jobs = _build_inference_shards(job.clip_name, frame_count, params)
+
+    # Check credit balance before chaining (the initial pipeline submission
+    # estimated the full cost, but the estimate may have been wrong)
+    if next_jobs and job.org_id:
+        try:
+            from .credit_guard import check_credit_balance_by_org, estimate_gpu_seconds
+
+            est = sum(estimate_gpu_seconds(j.job_type.value, frame_count) for j in next_jobs)
+            check_credit_balance_by_org(job.org_id, est)
+        except Exception as e:
+            logger.warning(f"Pipeline chain: credit check failed for '{job.clip_name}': {e}")
+            manager.send_job_warning(
+                job.id,
+                f"Pipeline stopped: insufficient GPU credits for next step.",
+                org_id=job.org_id,
+            )
+            return
 
     for next_job in next_jobs:
         next_job.org_id = job.org_id

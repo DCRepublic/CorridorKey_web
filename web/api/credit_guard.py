@@ -139,3 +139,25 @@ def check_credit_balance(request: Request, estimated_seconds: float = 0) -> None
             f"{credits.contributed_seconds * CREDIT_RATIO / 3600:.1f}h allowed). "
             f"Add more nodes to earn credits.",
         )
+
+
+def check_credit_balance_by_org(org_id: str, estimated_seconds: float = 0) -> None:
+    """Check credits for a specific org (used by pipeline chaining, no Request needed).
+
+    Raises ValueError if over budget. No-op when enforcement is disabled.
+    """
+    if CREDIT_RATIO <= 0:
+        return
+
+    credits = get_org_credits(org_id)
+    projected_consumed = credits.consumed_seconds + estimated_seconds
+
+    if projected_consumed <= CREDIT_GRACE:
+        return
+
+    if credits.contributed_seconds <= 0:
+        raise ValueError(f"Org {org_id} has no contributed GPU time")
+
+    projected_ratio = projected_consumed / credits.contributed_seconds
+    if projected_ratio > CREDIT_RATIO:
+        raise ValueError(f"Org {org_id} would exceed credit ratio ({projected_ratio:.1f}x > {CREDIT_RATIO:.1f}x)")

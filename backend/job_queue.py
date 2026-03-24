@@ -401,6 +401,7 @@ class GPUJobQueue:
             completed = sum(1 for s in shards if s.status == JobStatus.COMPLETED)
             running = sum(1 for s in shards if s.status == JobStatus.RUNNING)
             failed = sum(1 for s in shards if s.status == JobStatus.FAILED)
+            cancelled = sum(1 for s in shards if s.status == JobStatus.CANCELLED)
             current = sum(s.current_frame for s in shards)
             total = sum(s.total_frames for s in shards)
 
@@ -410,6 +411,7 @@ class GPUJobQueue:
                 "completed": completed,
                 "running": running,
                 "failed": failed,
+                "cancelled": cancelled,
                 "current_frame": current,
                 "total_frames": total,
             }
