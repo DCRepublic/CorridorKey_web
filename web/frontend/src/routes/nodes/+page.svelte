@@ -34,6 +34,7 @@
 	let tokenGenerating = $state(false);
 	let nodeTokens = $state<{ token_preview: string; label: string; org_id: string; node_id: string | null; revoked: boolean; created_at: number }[]>([]);
 	let showRevokedTokens = $state(false);
+	let showRepBreakdown = $state<string | null>(null);
 	let userOrgs = $state<{ org_id: string; name: string }[]>([]);
 	let selectedOrgId = $state('');
 
@@ -574,8 +575,23 @@ volumes:
 								<span class="visibility-badge mono shared">SHARED</span>
 							{/if}
 							{#if node.reputation}
-								<span class="rep-badge mono" class:rep-good={node.reputation.score >= 70} class:rep-mid={node.reputation.score >= 40 && node.reputation.score < 70} class:rep-bad={node.reputation.score < 40}>
-									{node.reputation.score}
+								<span class="rep-wrapper">
+									<button class="rep-badge mono" class:rep-good={node.reputation.score >= 70} class:rep-mid={node.reputation.score >= 40 && node.reputation.score < 70} class:rep-bad={node.reputation.score < 40} aria-label="Reputation score breakdown" onclick={(e) => { e.stopPropagation(); showRepBreakdown = showRepBreakdown === node.node_id ? null : node.node_id; }}>
+										{node.reputation.score}
+									</button>
+									{#if showRepBreakdown === node.node_id && node.reputation.breakdown}
+										<div class="rep-breakdown">
+											<div class="rep-row"><span>Success rate</span><span class="mono">{(node.reputation.breakdown.success.value * 100).toFixed(0)}%</span><span class="mono rep-pts">{node.reputation.breakdown.success.points}/50</span></div>
+											<div class="rep-row"><span>Speed</span><span class="mono">{node.reputation.breakdown.speed.value} fps</span><span class="mono rep-pts">{node.reputation.breakdown.speed.points}/20</span></div>
+											<div class="rep-row"><span>Uptime</span><span class="mono">{(node.reputation.breakdown.uptime.value * 100).toFixed(0)}%</span><span class="mono rep-pts">{node.reputation.breakdown.uptime.points}/30</span></div>
+											{#if node.reputation.breakdown.security_penalty.warnings > 0}
+												<div class="rep-row rep-penalty"><span>Security</span><span class="mono">{node.reputation.breakdown.security_penalty.warnings} warnings</span><span class="mono rep-pts">{node.reputation.breakdown.security_penalty.points}</span></div>
+											{/if}
+											<div class="rep-divider"></div>
+											<div class="rep-row"><span>Jobs</span><span class="mono">{node.reputation.stats.completed_jobs} done, {node.reputation.stats.failed_jobs} failed</span></div>
+											<div class="rep-row"><span>Frames</span><span class="mono">{node.reputation.stats.total_frames.toLocaleString()}</span></div>
+										</div>
+									{/if}
 								</span>
 							{/if}
 							{#if node.version_match === false}
@@ -1572,9 +1588,11 @@ volumes:
 
 	.node-org { font-size: 10px; color: var(--text-tertiary); letter-spacing: 0.06em; }
 
+	.rep-wrapper { position: relative; display: inline-block; }
 	.rep-badge {
 		font-size: 10px; font-weight: 700; padding: 1px 6px;
 		border-radius: 3px; letter-spacing: 0.04em;
+		border: none; cursor: pointer; font-family: inherit;
 	}
 	.rep-good { background: rgba(93, 216, 121, 0.12); color: var(--state-complete); }
 	.rep-mid { background: rgba(255, 242, 3, 0.12); color: var(--accent); }
