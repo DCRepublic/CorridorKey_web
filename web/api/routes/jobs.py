@@ -344,93 +344,198 @@ def retry_shard_group(group_id: str, request: Request):
     }
 
 
+def _gpu_speed_weights(job_type: str) -> dict[str, float]:
+    """Build GPU speed weights from job history.
+
+    Returns {gpu_name: median_fps}. Only uses local GPU jobs (claimed_by="local")
+    to avoid polluting speed data with HTTP transfer overhead from remote nodes.
+    Falls back to VRAM-based heuristic for GPUs with no history.
+    """
+    queue = get_queue()
+    history = queue.history_snapshot
+
+    # Collect fps per GPU model from completed LOCAL jobs only
+    fps_by_gpu: dict[str, list[float]] = {}
+    for j in history:
+        if (
+            j.status.value == "completed"
+            and j.job_type.value == job_type
+            and j.total_frames > 0
+            and j.started_at > 0
+            and j.completed_at > j.started_at
+            and j.claimed_by == "local"
+        ):
+            duration = j.completed_at - j.started_at
+            fps = j.total_frames / duration
+            if fps > 0 and fps < 100:  # sanity bound
+                # Look up the GPU name from the device (local GPU)
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        gpu_name = torch.cuda.get_device_name(0)
+                        fps_by_gpu.setdefault(gpu_name, []).append(fps)
+                except Exception:
+                    pass
+
+    # Also collect from remote nodes — but only if they used shared storage
+    # (no HTTP transfer overhead). We can identify this by fast completion times.
+    for j in history:
+        if (
+            j.status.value == "completed"
+            and j.job_type.value == job_type
+            and j.total_frames > 0
+            and j.started_at > 0
+            and j.completed_at > j.started_at
+            and j.claimed_by
+            and j.claimed_by != "local"
+        ):
+            node = registry.get_node(j.claimed_by)
+            if node and node.shared_storage:
+                # Shared storage = no transfer overhead, safe to use
+                duration = j.completed_at - j.started_at
+                fps = j.total_frames / duration
+                if fps > 0 and fps < 100:
+                    gpu_name = node.gpus[0].name if node.gpus else node.gpu_name
+                    if gpu_name:
+                        fps_by_gpu.setdefault(gpu_name, []).append(fps)
+
+    # Compute median fps per GPU
+    result: dict[str, float] = {}
+    for gpu_name, fps_list in fps_by_gpu.items():
+        fps_list.sort()
+        result[gpu_name] = fps_list[len(fps_list) // 2]
+
+    return result
+
+
+def _weighted_shard_sizes(frame_count: int, gpu_names: list[str], speed_map: dict[str, float]) -> list[int]:
+    """Distribute frames proportionally to GPU speed.
+
+    GPUs with known speed get proportional shares. GPUs with unknown speed
+    get the median share (assume average performance).
+    """
+    if not gpu_names:
+        return []
+
+    # Get speed for each GPU, defaulting unknowns to the median known speed
+    known_speeds = [speed_map[g] for g in gpu_names if g in speed_map]
+    default_speed = sorted(known_speeds)[len(known_speeds) // 2] if known_speeds else 1.0
+
+    weights = [speed_map.get(g, default_speed) for g in gpu_names]
+    total_weight = sum(weights)
+
+    # Distribute frames proportionally
+    sizes = []
+    remaining = frame_count
+    for i, w in enumerate(weights):
+        if i == len(weights) - 1:
+            sizes.append(remaining)  # last GPU gets whatever's left
+        else:
+            share = max(1, round(frame_count * w / total_weight))
+            share = min(share, remaining)
+            sizes.append(share)
+            remaining -= share
+
+    return sizes
+
+
+def _get_available_gpus(job_type: str) -> list[str]:
+    """Get list of GPU model names for available workers (local + remote nodes)."""
+    from ..worker import get_local_gpu_enabled
+
+    gpu_names: list[str] = []
+
+    if get_local_gpu_enabled():
+        try:
+            import torch
+            if torch.cuda.is_available():
+                gpu_names.append(torch.cuda.get_device_name(0))
+            else:
+                gpu_names.append("unknown")
+        except Exception:
+            gpu_names.append("unknown")
+
+    online_nodes = [
+        n for n in registry.list_nodes()
+        if n.can_accept_jobs and n.accepts_job_type(job_type) and n.status != "busy"
+    ]
+    for node in online_nodes:
+        if node.gpus:
+            for g in node.gpus:
+                if g.status != "busy":
+                    gpu_names.append(g.name or "unknown")
+        else:
+            gpu_names.append(node.gpu_name or "unknown")
+
+    return gpu_names
+
+
 def _build_gvm_jobs(clip_name: str, frame_count: int, extra_params: dict | None = None) -> list[GPUJob]:
     """Build GVM jobs for a clip, auto-sharding across available GPUs.
 
-    Returns a list of GPUJob objects (sharded or single). Caller is
-    responsible for stamping and submitting them.
+    Distributes frames proportionally to GPU speed (from job history).
+    Falls back to even distribution when no history is available.
     """
-    from ..worker import get_local_gpu_enabled
-
-    available = 0
-    if get_local_gpu_enabled():
-        available += 1
-    online_nodes = [
-        n for n in registry.list_nodes()
-        if n.can_accept_jobs and n.accepts_job_type("gvm_alpha") and n.status != "busy"
-    ]
-    available += len(online_nodes)
-
+    gpu_names = _get_available_gpus("gvm_alpha")
     min_shard = 20
     params = dict(extra_params) if extra_params else {}
 
-    if available > 1 and frame_count > min_shard:
-        num_shards = min(available, frame_count // min_shard)
-        if num_shards > 1:
-            group_id = uuid.uuid4().hex[:8]
-            base = frame_count // num_shards
-            remainder = frame_count % num_shards
-            cursor = 0
-            jobs = []
-            for i in range(num_shards):
-                size = base + (1 if i < remainder else 0)
-                job = GPUJob(
-                    job_type=JobType.GVM_ALPHA,
-                    clip_name=clip_name,
-                    params={**params, "frame_range": [cursor, cursor + size]},
-                    shard_group=group_id,
-                    shard_index=i,
-                    shard_total=num_shards,
-                )
-                jobs.append(job)
-                cursor += size
-            return jobs
+    num_shards = min(len(gpu_names), frame_count // min_shard) if gpu_names else 0
+    if num_shards > 1:
+        speed_map = _gpu_speed_weights("gvm_alpha")
+        sizes = _weighted_shard_sizes(frame_count, gpu_names[:num_shards], speed_map)
+        group_id = uuid.uuid4().hex[:8]
+        cursor = 0
+        jobs = []
+        for i, size in enumerate(sizes):
+            job = GPUJob(
+                job_type=JobType.GVM_ALPHA,
+                clip_name=clip_name,
+                params={**params, "frame_range": [cursor, cursor + size]},
+                shard_group=group_id,
+                shard_index=i,
+                shard_total=len(sizes),
+            )
+            jobs.append(job)
+            cursor += size
+        if speed_map:
+            logger.info(f"GVM sharding for '{clip_name}': {sizes} frames across {gpu_names[:num_shards]} (speed-weighted)")
+        return jobs
 
-    # Single node — not enough GPUs to shard
     return [GPUJob(job_type=JobType.GVM_ALPHA, clip_name=clip_name, params=params)]
 
 
 def _build_inference_shards(clip_name: str, frame_count: int, extra_params: dict | None = None) -> list[GPUJob]:
     """Build inference jobs for a clip, auto-sharding across available GPUs.
 
-    Returns a list of GPUJob objects (sharded or single). Same sharding
-    logic as _build_gvm_jobs but for inference. Uses inclusive frame ranges.
+    Distributes frames proportionally to GPU speed (from job history).
+    Uses inclusive frame ranges (run_inference treats end as inclusive).
     """
-    from ..worker import get_local_gpu_enabled
-
-    available = 0
-    if get_local_gpu_enabled():
-        available += 1
-    online_nodes = [
-        n for n in registry.list_nodes()
-        if n.can_accept_jobs and n.accepts_job_type("inference") and n.status != "busy"
-    ]
-    available += len(online_nodes)
-
+    gpu_names = _get_available_gpus("inference")
     min_shard = 50
     params = dict(extra_params) if extra_params else {}
 
-    if available > 1 and frame_count > min_shard:
-        num_shards = min(available, frame_count // min_shard)
-        if num_shards > 1:
-            group_id = uuid.uuid4().hex[:8]
-            base = frame_count // num_shards
-            remainder = frame_count % num_shards
-            cursor = 0
-            jobs = []
-            for i in range(num_shards):
-                size = base + (1 if i < remainder else 0)
-                job = GPUJob(
-                    job_type=JobType.INFERENCE,
-                    clip_name=clip_name,
-                    params={**params, "frame_range": [cursor, cursor + size - 1]},  # inclusive end
-                    shard_group=group_id,
-                    shard_index=i,
-                    shard_total=num_shards,
-                )
-                jobs.append(job)
-                cursor += size
-            return jobs
+    num_shards = min(len(gpu_names), frame_count // min_shard) if gpu_names else 0
+    if num_shards > 1:
+        speed_map = _gpu_speed_weights("inference")
+        sizes = _weighted_shard_sizes(frame_count, gpu_names[:num_shards], speed_map)
+        group_id = uuid.uuid4().hex[:8]
+        cursor = 0
+        jobs = []
+        for i, size in enumerate(sizes):
+            job = GPUJob(
+                job_type=JobType.INFERENCE,
+                clip_name=clip_name,
+                params={**params, "frame_range": [cursor, cursor + size - 1]},  # inclusive end
+                shard_group=group_id,
+                shard_index=i,
+                shard_total=len(sizes),
+            )
+            jobs.append(job)
+            cursor += size
+        if speed_map:
+            logger.info(f"Inference sharding for '{clip_name}': {sizes} frames across {gpu_names[:num_shards]} (speed-weighted)")
+        return jobs
 
     return [GPUJob(job_type=JobType.INFERENCE, clip_name=clip_name, params=params)]
 
