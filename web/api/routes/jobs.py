@@ -390,6 +390,51 @@ def _build_gvm_jobs(clip_name: str, frame_count: int, extra_params: dict | None 
     return [GPUJob(job_type=JobType.GVM_ALPHA, clip_name=clip_name, params=params)]
 
 
+def _build_inference_shards(clip_name: str, frame_count: int, extra_params: dict | None = None) -> list[GPUJob]:
+    """Build inference jobs for a clip, auto-sharding across available GPUs.
+
+    Returns a list of GPUJob objects (sharded or single). Same sharding
+    logic as _build_gvm_jobs but for inference. Uses inclusive frame ranges.
+    """
+    from ..worker import get_local_gpu_enabled
+
+    available = 0
+    if get_local_gpu_enabled():
+        available += 1
+    online_nodes = [
+        n for n in registry.list_nodes()
+        if n.can_accept_jobs and n.accepts_job_type("inference") and n.status != "busy"
+    ]
+    available += len(online_nodes)
+
+    min_shard = 50
+    params = dict(extra_params) if extra_params else {}
+
+    if available > 1 and frame_count > min_shard:
+        num_shards = min(available, frame_count // min_shard)
+        if num_shards > 1:
+            group_id = uuid.uuid4().hex[:8]
+            base = frame_count // num_shards
+            remainder = frame_count % num_shards
+            cursor = 0
+            jobs = []
+            for i in range(num_shards):
+                size = base + (1 if i < remainder else 0)
+                job = GPUJob(
+                    job_type=JobType.INFERENCE,
+                    clip_name=clip_name,
+                    params={**params, "frame_range": [cursor, cursor + size - 1]},  # inclusive end
+                    shard_group=group_id,
+                    shard_index=i,
+                    shard_total=num_shards,
+                )
+                jobs.append(job)
+                cursor += size
+            return jobs
+
+    return [GPUJob(job_type=JobType.INFERENCE, clip_name=clip_name, params=params)]
+
+
 @router.post("/gvm", response_model=list[JobSchema], summary="Submit GVM alpha generation")
 def submit_gvm(req: GVMJobRequest, request: Request):
     """Generate alpha hints using Generative Video Matting.

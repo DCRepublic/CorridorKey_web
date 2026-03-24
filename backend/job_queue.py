@@ -414,6 +414,17 @@ class GPUJobQueue:
                 "total_frames": total,
             }
 
+    def shard_group_all_done(self, shard_group: str) -> bool:
+        """Check if all shards in a group have completed (or failed)."""
+        if not shard_group:
+            return True
+        with self._lock:
+            all_jobs = list(self._running_jobs) + list(self._queue) + self._history
+            shards = [j for j in all_jobs if j.shard_group == shard_group]
+            if not shards:
+                return True
+            return all(s.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED) for s in shards)
+
     def cancel_shard_group(self, shard_group: str) -> int:
         """Cancel all shards in a group. Returns the number cancelled."""
         cancelled = 0

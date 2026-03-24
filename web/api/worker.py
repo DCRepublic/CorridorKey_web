@@ -233,7 +233,18 @@ def _chain_next_pipeline_step(job: GPUJob, queue: GPUJobQueue, clips_dir: str, s
     state = clip.state.value
     params = job.params  # carries pipeline config forward
 
+    # If this job is part of a shard group, wait until ALL shards are done
+    # before chaining the next step. Otherwise each shard would independently
+    # try to chain, causing duplicate submissions or partial processing.
+    if job.shard_group and not queue.shard_group_all_done(job.shard_group):
+        logger.debug(
+            f"Pipeline chain: waiting for shard group {job.shard_group} to complete "
+            f"before chaining next step for '{job.clip_name}'"
+        )
+        return
+
     next_jobs: list[GPUJob] = []
+    frame_count = clip.input_asset.frame_count if clip.input_asset else 0
 
     if state == "RAW":
         # Extraction done → need alpha generation
@@ -245,24 +256,19 @@ def _chain_next_pipeline_step(job: GPUJob, queue: GPUJobQueue, clips_dir: str, s
                 params={**params, "chunk_size": 50},
             )]
         else:
-            # Use the same sharding logic as the standalone GVM endpoint
             from .routes.jobs import _build_gvm_jobs
 
-            frame_count = clip.input_asset.frame_count if clip.input_asset else 0
             next_jobs = _build_gvm_jobs(job.clip_name, frame_count, extra_params=params)
     elif state == "READY":
-        # Alpha done → need inference
-        next_jobs = [GPUJob(
-            job_type=JobType.INFERENCE,
-            clip_name=job.clip_name,
-            params=params,
-        )]
+        # Alpha done → need inference (shard across available GPUs)
+        from .routes.jobs import _build_inference_shards
+
+        next_jobs = _build_inference_shards(job.clip_name, frame_count, params)
 
     for next_job in next_jobs:
-        # Propagate tenant context for multi-tenant isolation
         next_job.org_id = job.org_id
         next_job.submitted_by = job.submitted_by
-        # Pin to the same node for single (non-sharded) jobs
+        # Pin to the same node for single (non-sharded) jobs only
         if len(next_jobs) == 1 and job.claimed_by and job.claimed_by != "local":
             next_job.preferred_node = job.claimed_by
         if queue.submit(next_job):
