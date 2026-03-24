@@ -21,6 +21,29 @@ logger = logging.getLogger(__name__)
 # Prevents multiple jobs from saturating the network simultaneously.
 _transfer_semaphore = threading.Semaphore(2)
 
+# Transient HTTP status codes worth retrying (server restart, load balancer hiccup)
+_RETRY_STATUSES = {401, 502, 503, 504}
+_MAX_RETRIES = 3
+_RETRY_DELAY = 3  # seconds
+
+
+def _with_retry(fn, description: str = "request"):
+    """Retry a function on transient HTTP errors."""
+    import time
+
+    last_err = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return fn()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in _RETRY_STATUSES and attempt < _MAX_RETRIES - 1:
+                logger.warning(f"{description}: {e.response.status_code}, retrying in {_RETRY_DELAY}s ({attempt + 1}/{_MAX_RETRIES})")
+                time.sleep(_RETRY_DELAY)
+                last_err = e
+            else:
+                raise
+    raise last_err  # shouldn't reach here
+
 
 class FileTransfer:
     """Handles file downloads/uploads between node and main machine."""
@@ -138,26 +161,30 @@ class FileTransfer:
         os.makedirs(dest_dir, exist_ok=True)
         count = 0
 
-        with _transfer_semaphore, httpx.Client(timeout=self.timeout, headers=self._headers) as client:
-            for fname in files:
-                dest_path = os.path.join(dest_dir, fname)
-                if os.path.isfile(dest_path):
-                    count += 1
-                    continue
+        for fname in files:
+            dest_path = os.path.join(dest_dir, fname)
+            if os.path.isfile(dest_path):
+                count += 1
+                continue
 
-                url = self._url(f"{clip_name}/{pass_name}/{fname}")
-                tmp_path = dest_path + ".part"
-                try:
-                    with client.stream("GET", url) as resp:
-                        resp.raise_for_status()
-                        with open(tmp_path, "wb") as f:
-                            for chunk in resp.iter_bytes(chunk_size=8 * 1024 * 1024):
-                                f.write(chunk)
-                    os.replace(tmp_path, dest_path)
-                except Exception:
-                    if os.path.isfile(tmp_path):
-                        os.remove(tmp_path)
-                    raise
+            url = self._url(f"{clip_name}/{pass_name}/{fname}")
+            tmp_path = dest_path + ".part"
+
+            def _do_download(u=url, tp=tmp_path, dp=dest_path):
+                with _transfer_semaphore, httpx.Client(timeout=self.timeout, headers=self._headers) as client:
+                    try:
+                        with client.stream("GET", u) as resp:
+                            resp.raise_for_status()
+                            with open(tp, "wb") as f:
+                                for chunk in resp.iter_bytes(chunk_size=8 * 1024 * 1024):
+                                    f.write(chunk)
+                        os.replace(tp, dp)
+                    except Exception:
+                        if os.path.isfile(tp):
+                            os.remove(tp)
+                        raise
+
+            _with_retry(_do_download, f"Download {fname}")
                 count += 1
 
         logger.info(f"Downloaded {count} files for {clip_name}/{pass_name} → {directory}/")
@@ -168,10 +195,13 @@ class FileTransfer:
         fname = Path(file_path).name
         url = self._url(f"{clip_name}/{pass_name}/{fname}")
 
-        with _transfer_semaphore, httpx.Client(timeout=self.timeout, headers=self._headers) as client:
-            with open(file_path, "rb") as f:
-                r = client.post(url, files={"file": (fname, f)})
-                r.raise_for_status()
+        def _do():
+            with _transfer_semaphore, httpx.Client(timeout=self.timeout, headers=self._headers) as client:
+                with open(file_path, "rb") as f:
+                    r = client.post(url, files={"file": (fname, f)})
+                    r.raise_for_status()
+
+        _with_retry(_do, f"Upload {fname}")
 
     def upload_directory(self, clip_name: str, pass_name: str, src_dir: str) -> int:
         """Upload all files in a directory as results.
@@ -225,22 +255,26 @@ class FileTransfer:
         total_bytes = 0
         url = self._url(f"{clip_name}/{pass_name}/bundle")
 
-        with _transfer_semaphore, httpx.Client(timeout=self.timeout, headers=self._headers) as client:
-            for i, compressed in enumerate(chunks):
-                total_bytes += len(compressed)
-                r = client.post(
-                    url,
-                    content=compressed,
-                    headers={
-                        **self._headers,
-                        "Content-Type": "application/x-tar",
-                        "Content-Encoding": "gzip",
-                        "Content-Length": str(len(compressed)),
-                    },
-                )
-                r.raise_for_status()
-                data = r.json()
-                total_count += data.get("count", 0)
+        for i, compressed in enumerate(chunks):
+            total_bytes += len(compressed)
+
+            def _do_chunk(chunk=compressed):
+                with _transfer_semaphore, httpx.Client(timeout=self.timeout, headers=self._headers) as client:
+                    r = client.post(
+                        url,
+                        content=chunk,
+                        headers={
+                            **self._headers,
+                            "Content-Type": "application/x-tar",
+                            "Content-Encoding": "gzip",
+                            "Content-Length": str(len(chunk)),
+                        },
+                    )
+                    r.raise_for_status()
+                    return r.json()
+
+            data = _with_retry(_do_chunk, f"Bundle chunk {i + 1}/{len(chunks)}")
+            total_count += data.get("count", 0)
 
         mb = total_bytes / (1024 * 1024)
         chunk_info = f", {len(chunks)} chunks" if len(chunks) > 1 else ""
