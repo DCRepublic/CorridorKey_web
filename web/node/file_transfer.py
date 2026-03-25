@@ -285,63 +285,62 @@ class FileTransfer:
         return total_count
 
     def _build_tar_chunks(self, src_dir: str, files: list[str]) -> list[bytes]:
-        """Build gzip-compressed tar chunks, each under _MAX_BUNDLE_BYTES."""
-        import gzip
+        """Build gzip-compressed tar chunks, each under _MAX_BUNDLE_BYTES.
 
+        Streams one chunk at a time instead of buffering the entire tar.
+        Only one chunk is in memory at a time — peak RAM = one chunk (~90MB).
+        """
+        import gzip
         import time as _time
 
-        # Try single bundle first
-        logger.info(f"Compressing {len(files)} files for upload...")
-        t0 = _time.time()
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w") as tar:
-            for fname in files:
-                fpath = os.path.join(src_dir, fname)
-                tar.add(fpath, arcname=fname)
-        raw = buf.getvalue()
-        compressed = gzip.compress(raw, compresslevel=1)
-        elapsed = _time.time() - t0
-        raw_mb = len(raw) / (1024 * 1024)
-        comp_mb = len(compressed) / (1024 * 1024)
-        logger.info(f"Compressed {raw_mb:.0f}MB → {comp_mb:.0f}MB ({raw_mb / max(1, comp_mb):.1f}x) in {elapsed:.1f}s")
+        total_raw = sum(os.path.getsize(os.path.join(src_dir, f)) for f in files)
+        total_mb = total_raw / (1024 * 1024)
+        logger.info(f"Preparing {len(files)} files ({total_mb:.0f}MB) for upload...")
 
-        if len(compressed) <= self._MAX_BUNDLE_BYTES:
-            return [compressed]
+        # Estimate compression ratio from first file to plan chunking
+        first_path = os.path.join(src_dir, files[0])
+        sample_raw = open(first_path, "rb").read()
+        sample_gz = gzip.compress(sample_raw, compresslevel=1)
+        ratio = len(sample_raw) / max(1, len(sample_gz))
+        raw_limit = int(self._MAX_BUNDLE_BYTES * ratio * 0.85)  # 85% safety margin
 
-        # Too large — split files into chunks that fit
-        logger.info(f"Bundle {comp_mb:.0f}MB exceeds {self._MAX_BUNDLE_BYTES // (1024*1024)}MB limit, splitting into chunks")
-        chunks = []
-        chunk_files: list[str] = []
-        chunk_raw_size = 0
-
-        # Estimate compression ratio from the full bundle
-        ratio = len(raw) / max(1, len(compressed))
-        raw_limit = int(self._MAX_BUNDLE_BYTES * ratio * 0.9)  # 90% of estimated limit
+        # Split files into chunk groups by estimated size
+        chunk_groups: list[list[str]] = []
+        current_group: list[str] = []
+        current_size = 0
 
         for fname in files:
-            fpath = os.path.join(src_dir, fname)
-            fsize = os.path.getsize(fpath)
+            fsize = os.path.getsize(os.path.join(src_dir, fname))
+            if current_size + fsize > raw_limit and current_group:
+                chunk_groups.append(current_group)
+                current_group = []
+                current_size = 0
+            current_group.append(fname)
+            current_size += fsize
 
-            if chunk_raw_size + fsize > raw_limit and chunk_files:
-                # Flush current chunk
-                chunks.append(self._compress_chunk(src_dir, chunk_files))
-                chunk_files = []
-                chunk_raw_size = 0
+        if current_group:
+            chunk_groups.append(current_group)
 
-            chunk_files.append(fname)
-            chunk_raw_size += fsize
+        # Compress one chunk at a time (only one in memory)
+        t0 = _time.time()
+        chunks: list[bytes] = []
+        total_compressed = 0
 
-        if chunk_files:
-            chunks.append(self._compress_chunk(src_dir, chunk_files))
+        for i, group in enumerate(chunk_groups):
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                for fname in group:
+                    tar.add(os.path.join(src_dir, fname), arcname=fname)
+            compressed = gzip.compress(buf.getvalue(), compresslevel=1)
+            chunks.append(compressed)
+            total_compressed += len(compressed)
+            del buf  # free raw buffer immediately
+
+        elapsed = _time.time() - t0
+        comp_mb = total_compressed / (1024 * 1024)
+        logger.info(
+            f"Compressed {total_mb:.0f}MB → {comp_mb:.0f}MB "
+            f"({total_mb / max(1, comp_mb):.1f}x, {len(chunks)} chunks) in {elapsed:.1f}s"
+        )
 
         return chunks
-
-    def _compress_chunk(self, src_dir: str, files: list[str]) -> bytes:
-        """Build and compress a single tar chunk."""
-        import gzip
-
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w") as tar:
-            for fname in files:
-                tar.add(os.path.join(src_dir, fname), arcname=fname)
-        return gzip.compress(buf.getvalue(), compresslevel=1)

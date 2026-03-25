@@ -313,7 +313,8 @@ class NodeAgent:
 
         # Upload results BEFORE reporting completion
         if not use_shared and clips_dir:
-            self._upload_results(clip_name, clips_dir, job_type=job_data.get("job_type", ""), job_id=job_id)
+            enabled_outputs = job_data.get("params", {}).get("output_config", {}).get("enabled_outputs") or None
+            self._upload_results(clip_name, clips_dir, job_type=job_data.get("job_type", ""), job_id=job_id, enabled_outputs=enabled_outputs)
             self._cleanup_temp(clips_dir)
 
         # Only report completed after results are uploaded to the server
@@ -367,17 +368,28 @@ class NodeAgent:
 
         return base_dir
 
-    def _upload_results(self, clip_name: str, clips_dir: str, job_type: str = "", job_id: str = "") -> None:
+    def _upload_results(self, clip_name: str, clips_dir: str, job_type: str = "", job_id: str = "", enabled_outputs: list[str] | None = None) -> None:
         """Upload output files back to the main machine. Checks cancellation between passes."""
         clip_dir = os.path.join(clips_dir, clip_name)
 
-        # Inference outputs
-        output_map = {
+        # Inference outputs — only upload enabled passes
+        all_passes = {
             "fg": os.path.join(clip_dir, "Output", "FG"),
             "matte": os.path.join(clip_dir, "Output", "Matte"),
             "comp": os.path.join(clip_dir, "Output", "Comp"),
             "processed": os.path.join(clip_dir, "Output", "Processed"),
         }
+
+        if enabled_outputs:
+            output_map = {k: v for k, v in all_passes.items() if k in enabled_outputs}
+            skipped = [k for k in all_passes if k not in enabled_outputs]
+            if skipped:
+                logger.info(f"Skipping disabled output passes: {', '.join(skipped)}")
+        else:
+            # Default: skip comp for remote nodes (server generates previews on demand)
+            output_map = {k: v for k, v in all_passes.items() if k != "comp"}
+            logger.info("Skipping comp pass upload (server generates previews on demand)")
+
         # Only upload alpha hints for jobs that generate them (GVM/VideoMaMa)
         if job_type in ("gvm_alpha", "videomama_alpha"):
             output_map["alpha"] = os.path.join(clip_dir, "AlphaHint")

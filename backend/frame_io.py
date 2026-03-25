@@ -23,12 +23,14 @@ from .validators import normalize_mask_channels, normalize_mask_dtype
 
 logger = logging.getLogger(__name__)
 
-# EXR write flags — PXR24 half-float (smallest working compression)
+# EXR write flags — PIZ half-float (best lossless compression for VFX float data)
+# PIZ typically achieves 2.5-3x compression on green screen footage vs PXR24's ~1.5x.
+# Lossless for half-float, supported by all major VFX tools (Nuke, AE, DaVinci, Blender).
 EXR_WRITE_FLAGS = [
     cv2.IMWRITE_EXR_TYPE,
     cv2.IMWRITE_EXR_TYPE_HALF,
     cv2.IMWRITE_EXR_COMPRESSION,
-    cv2.IMWRITE_EXR_COMPRESSION_PXR24,
+    cv2.IMWRITE_EXR_COMPRESSION_PIZ,
 ]
 
 
