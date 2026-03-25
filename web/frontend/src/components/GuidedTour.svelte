@@ -24,9 +24,15 @@
 		// Clips page
 		{ id: 'clips-upload', selector: '.upload-label, .btn-upload', title: 'UPLOAD', text: 'Drag & drop green screen footage here, or click to browse. Supports video (MP4, MOV), images (PNG, EXR, JPG), and ZIP archives.', position: 'bottom', page: '/clips' },
 
-		// Clip detail page
-		{ id: 'clip-pipeline', selector: '.btn-hero, .btn-muted', title: 'RUN PIPELINE', text: 'Click "Run Full Pipeline" to automatically generate alpha hints and key your footage. It distributes work across all available GPUs.', position: 'left', page: '/clips/' },
-		{ id: 'clip-passes', selector: '.pass-selector, .download-passes', title: 'OUTPUT PASSES', text: 'Processed = comp-ready RGBA EXR. Comp = PNG preview. Enable FG/Matte in settings for separate foreground and alpha passes.', position: 'left', page: '/clips/' },
+		// Clip detail page — comprehensive walkthrough
+		{ id: 'clip-viewer', selector: '.frame-viewer, .viewer-wrap, .preview-container', title: 'FRAME VIEWER', text: 'Preview your footage frame by frame. Use the scrubber to navigate. Switch between Input, Alpha, and Output passes.', position: 'bottom', page: '/clips/' },
+		{ id: 'clip-state', selector: '.clip-state, .state-badge, .info-grid', title: 'CLIP STATE', text: 'RAW = needs alpha hints. READY = has hints, ready for keying. COMPLETE = fully processed with output passes available.', position: 'left', page: '/clips/' },
+		{ id: 'clip-inference-form', selector: '.inference-form, .param-section', title: 'INFERENCE SETTINGS', text: 'Fine-tune the keying parameters. The defaults work well for most green screen footage. Advanced users can adjust refiner scale and backbone settings.', position: 'left', page: '/clips/' },
+		{ id: 'clip-output-config', selector: '.output-toggles, .output-section', title: 'OUTPUT PASSES', text: 'Processed = premultiplied RGBA EXR (drop into Nuke/AE). Comp = PNG preview. FG/Matte are separate passes for advanced compositing.', position: 'left', page: '/clips/' },
+		{ id: 'clip-pipeline', selector: '.btn-hero', title: 'RUN PIPELINE', text: 'One click to do everything: generate alpha hints (GVM) then key the footage (inference). Automatically shards across all available GPUs.', position: 'left', page: '/clips/' },
+		{ id: 'clip-individual', selector: '.divider-label, .btn-secondary', title: 'INDIVIDUAL STEPS', text: 'Or run steps separately. "Run GVM Alpha" generates hints only. "Run Inference" keys footage using existing hints. Useful for re-keying with different params.', position: 'left', page: '/clips/' },
+		{ id: 'clip-cost', selector: '.cost-estimate', title: 'GPU COST ESTIMATE', text: 'Shows estimated processing time and GPU credit cost based on frame count and recent job history. Helps you plan before submitting.', position: 'left', page: '/clips/' },
+		{ id: 'clip-download', selector: '.download-hero, .download-passes, .hero-row', title: 'DOWNLOAD', text: 'After processing completes, download your keyed EXR sequence. Individual passes (FG, Matte, Comp) available as separate downloads.', position: 'left', page: '/clips/' },
 
 		// Jobs page
 		{ id: 'jobs-running', selector: '.section-title, .job-list', title: 'JOB QUEUE', text: 'Running jobs show real-time progress. Queued jobs show position and estimated wait time. Click any job to see its log.', position: 'bottom', page: '/jobs' },
