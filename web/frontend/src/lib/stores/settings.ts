@@ -44,7 +44,7 @@ export const defaultParams = persisted<InferenceParams>('ck:defaultParams', {
 	refiner_scale: 1.0
 });
 
-export const defaultOutputConfig = persisted<OutputConfig>('ck:defaultOutputConfig', {
+export const defaultOutputConfig = persisted<OutputConfig>('ck:defaultOutputConfig:v2', {
 	fg_enabled: false,
 	fg_format: 'exr',
 	matte_enabled: false,
