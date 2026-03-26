@@ -366,6 +366,8 @@
   corridorkey-node:
     image: {setupInfo.image}
     restart: unless-stopped
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     deploy:
       resources:
         reservations:
@@ -382,6 +384,16 @@
       - ck-weights:/app/CorridorKeyModule/checkpoints
       - ck-weights-gvm:/app/gvm_core/weights
       - ck-weights-vm:/app/VideoMaMaInferenceModule/checkpoints
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=300
+      - WATCHTOWER_LABEL_ENABLE=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   ck-weights:
