@@ -11,6 +11,7 @@ import logging
 import os
 import tarfile
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 # Max concurrent file transfers across all nodes on this machine.
 # Prevents multiple jobs from saturating the network simultaneously.
 _transfer_semaphore = threading.Semaphore(2)
+
+
+class TransferCancelled(Exception):
+    """Raised when a file transfer is cancelled mid-stream."""
 
 # Transient HTTP status codes worth retrying (server restart, load balancer hiccup)
 _RETRY_STATUSES = {401, 502, 503, 504}
@@ -84,6 +89,7 @@ class FileTransfer:
         pass_name: str,
         clip_dir: str,
         frame_range: tuple[int, int] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> int:
         """Download files for a clip pass into the correct subdirectory.
 
@@ -95,21 +101,29 @@ class FileTransfer:
             pass_name: Pass type ("input", "alpha", "mask", "source").
             clip_dir: Local clip root directory (files go into a subdirectory).
             frame_range: Optional (start, end) to only download frames in range.
+            is_cancelled: Optional callback returning True if the job was cancelled.
 
         Returns the number of files downloaded.
         """
         # Try bundle download first
         try:
-            count = self._download_bundle(clip_name, pass_name, clip_dir, frame_range)
+            count = self._download_bundle(clip_name, pass_name, clip_dir, frame_range, is_cancelled)
             if count > 0:
                 return count
+        except TransferCancelled:
+            raise
         except Exception as e:
             logger.debug(f"Bundle download failed, falling back to per-file: {e}")
 
-        return self._download_per_file(clip_name, pass_name, clip_dir, frame_range)
+        return self._download_per_file(clip_name, pass_name, clip_dir, frame_range, is_cancelled)
 
     def _download_bundle(
-        self, clip_name: str, pass_name: str, clip_dir: str, frame_range: tuple[int, int] | None
+        self,
+        clip_name: str,
+        pass_name: str,
+        clip_dir: str,
+        frame_range: tuple[int, int] | None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> int:
         """Download files as a tar stream (single HTTP request)."""
         params = {}
@@ -126,6 +140,8 @@ class FileTransfer:
                 # Stream tar data and extract
                 buf = io.BytesIO()
                 for chunk in resp.iter_bytes(chunk_size=8 * 1024 * 1024):
+                    if is_cancelled and is_cancelled():
+                        raise TransferCancelled(f"Download cancelled: {clip_name}/{pass_name}")
                     buf.write(chunk)
                 buf.seek(0)
 
@@ -146,7 +162,12 @@ class FileTransfer:
         return count
 
     def _download_per_file(
-        self, clip_name: str, pass_name: str, clip_dir: str, frame_range: tuple[int, int] | None
+        self,
+        clip_name: str,
+        pass_name: str,
+        clip_dir: str,
+        frame_range: tuple[int, int] | None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> int:
         """Download files one at a time (fallback)."""
         directory, files = self.list_files(clip_name, pass_name)
@@ -162,6 +183,9 @@ class FileTransfer:
         count = 0
 
         for fname in files:
+            if is_cancelled and is_cancelled():
+                raise TransferCancelled(f"Download cancelled: {clip_name}/{pass_name}")
+
             dest_path = os.path.join(dest_dir, fname)
             if os.path.isfile(dest_path):
                 count += 1
@@ -203,7 +227,13 @@ class FileTransfer:
 
         _with_retry(_do, f"Upload {fname}")
 
-    def upload_directory(self, clip_name: str, pass_name: str, src_dir: str) -> int:
+    def upload_directory(
+        self,
+        clip_name: str,
+        pass_name: str,
+        src_dir: str,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> int:
         """Upload all files in a directory as results.
 
         Tries tar bundle upload first (single HTTP request), falls back
@@ -220,15 +250,19 @@ class FileTransfer:
 
         # Try bundle upload first
         try:
-            count = self._upload_bundle(clip_name, pass_name, src_dir, files)
+            count = self._upload_bundle(clip_name, pass_name, src_dir, files, is_cancelled)
             if count > 0:
                 return count
+        except TransferCancelled:
+            raise
         except Exception as e:
             logger.warning(f"Bundle upload failed, falling back to per-file: {e}")
 
         # Per-file fallback
         count = 0
         for fname in files:
+            if is_cancelled and is_cancelled():
+                raise TransferCancelled(f"Upload cancelled: {clip_name}/{pass_name}")
             fpath = os.path.join(src_dir, fname)
             self.upload_file(clip_name, pass_name, fpath)
             count += 1
@@ -239,14 +273,20 @@ class FileTransfer:
     # Max compressed bundle size per upload (stay under Cloudflare's 100MB limit)
     _MAX_BUNDLE_BYTES = 90 * 1024 * 1024
 
-    def _upload_bundle(self, clip_name: str, pass_name: str, src_dir: str, files: list[str]) -> int:
+    def _upload_bundle(
+        self,
+        clip_name: str,
+        pass_name: str,
+        src_dir: str,
+        files: list[str],
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> int:
         """Upload files as gzip-compressed tar chunks.
 
         Splits into multiple uploads if the compressed size exceeds 90MB
         (Cloudflare's 100MB upload limit). Each chunk is a complete tar
         that the server extracts independently.
         """
-        import gzip
 
         # Build tar in memory and check size — split into chunks if needed
         chunks = self._build_tar_chunks(src_dir, files)
@@ -256,6 +296,8 @@ class FileTransfer:
         url = self._url(f"{clip_name}/{pass_name}/bundle")
 
         for i, compressed in enumerate(chunks):
+            if is_cancelled and is_cancelled():
+                raise TransferCancelled(f"Upload cancelled: {clip_name}/{pass_name}")
             total_bytes += len(compressed)
 
             def _do_chunk(chunk=compressed):

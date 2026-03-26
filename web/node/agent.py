@@ -269,8 +269,13 @@ class NodeAgent:
 
     def _process_job_on_gpu(self, job_data: dict, gpu_index: int) -> None:
         """Process a job on a specific GPU, then release the GPU slot."""
+        from .file_transfer import TransferCancelled
+
         try:
             self._process_job(job_data, gpu_index)
+        except TransferCancelled:
+            logger.info(f"Job {job_data['id']} cancelled during file transfer")
+            self._report_result(job_data["id"], "cancelled")
         except Exception as e:
             logger.exception(f"Job processing failed: {e}")
             self._report_result(job_data["id"], "failed", str(e))
@@ -313,8 +318,14 @@ class NodeAgent:
 
         # Upload results BEFORE reporting completion
         if not use_shared and clips_dir:
-            enabled_outputs = job_data.get("params", {}).get("output_config", {}).get("enabled_outputs") or None
-            self._upload_results(clip_name, clips_dir, job_type=job_data.get("job_type", ""), job_id=job_id, enabled_outputs=enabled_outputs)
+            out_cfg = job_data.get("params", {}).get("output_config", {})
+            enabled_outputs = out_cfg.get("enabled_outputs") or None
+            self._upload_results(
+                clip_name, clips_dir,
+                job_type=job_data.get("job_type", ""),
+                job_id=job_id,
+                enabled_outputs=enabled_outputs,
+            )
             self._cleanup_temp(clips_dir)
 
         # Only report completed after results are uploaded to the server
@@ -349,6 +360,11 @@ class NodeAgent:
         elif job_type == "videomama_alpha":
             passes = [("input", None), ("mask", None)]
 
+        job_id = job_data["id"]
+
+        def cancel_fn() -> bool:
+            return self._is_cancelled(job_id)
+
         # Download passes in parallel
         if len(passes) > 1:
             threads = []
@@ -356,7 +372,7 @@ class NodeAgent:
                 t = threading.Thread(
                     target=self.file_transfer.download_pass,
                     args=(clip_name, pass_name, clip_dir),
-                    kwargs={"frame_range": pass_fr},
+                    kwargs={"frame_range": pass_fr, "is_cancelled": cancel_fn},
                     daemon=True,
                 )
                 t.start()
@@ -364,11 +380,16 @@ class NodeAgent:
             for t in threads:
                 t.join()
         elif passes:
-            self.file_transfer.download_pass(clip_name, passes[0][0], clip_dir, frame_range=passes[0][1])
+            self.file_transfer.download_pass(
+                clip_name, passes[0][0], clip_dir, frame_range=passes[0][1], is_cancelled=cancel_fn,
+            )
 
         return base_dir
 
-    def _upload_results(self, clip_name: str, clips_dir: str, job_type: str = "", job_id: str = "", enabled_outputs: list[str] | None = None) -> None:
+    def _upload_results(
+        self, clip_name: str, clips_dir: str, job_type: str = "",
+        job_id: str = "", enabled_outputs: list[str] | None = None,
+    ) -> None:
         """Upload output files back to the main machine. Checks cancellation between passes."""
         clip_dir = os.path.join(clips_dir, clip_name)
 
@@ -394,13 +415,11 @@ class NodeAgent:
         if job_type in ("gvm_alpha", "videomama_alpha"):
             output_map["alpha"] = os.path.join(clip_dir, "AlphaHint")
 
+        cancel_fn = (lambda: self._is_cancelled(job_id)) if job_id else None
+
         for pass_name, dir_path in output_map.items():
             if os.path.isdir(dir_path):
-                # Check cancellation between passes to bail out early
-                if job_id and self._is_cancelled(job_id):
-                    logger.info(f"Job {job_id} cancelled during upload — aborting remaining passes")
-                    return
-                self.file_transfer.upload_directory(clip_name, pass_name, dir_path)
+                self.file_transfer.upload_directory(clip_name, pass_name, dir_path, is_cancelled=cancel_fn)
 
     def _cleanup_temp(self, clips_dir: str) -> None:
         """Remove temp directory after upload. Only deletes dirs we created."""
@@ -424,7 +443,7 @@ class NodeAgent:
         # Set CUDA_VISIBLE_DEVICES for this process
         os.environ["CUDA_VISIBLE_DEVICES"] = str(self._gpu_indices[0])
 
-        from backend.job_queue import GPUJob, JobStatus, JobType
+        from backend.job_queue import GPUJob, JobType
         from backend.service import CorridorKeyService, InferenceParams, OutputConfig
 
         service = CorridorKeyService()
@@ -445,9 +464,9 @@ class NodeAgent:
 
         def on_progress(cn: str, current: int, total: int) -> None:
             if not self._report_progress(job_id, current, total):
-                # Server cancelled this job — set the cancel flag so
-                # the service layer's cancel check picks it up
-                job.status = JobStatus.CANCELLED
+                # Server cancelled this job — request_cancel sets
+                # _cancel_requested which service.py checks per-frame
+                job.request_cancel()
 
         def on_warning(message: str) -> None:
             logger.warning(f"Job {job_id}: {message}")

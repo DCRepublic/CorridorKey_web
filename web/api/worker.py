@@ -207,6 +207,9 @@ def _execute_gpu_job(service: CorridorKeyService, job: GPUJob, clips_dir: str) -
         job.current_frame = current
         job.total_frames = total
         manager.send_job_progress(job.id, clip_name, current, total, org_id=job.org_id)
+        # Check cancel every frame — service.py also checks, but this
+        # ensures the UI-driven cancel propagates immediately
+        job.check_cancelled()
         if current % 10 == 0:
             vram = service.get_vram_info()
             if vram:
