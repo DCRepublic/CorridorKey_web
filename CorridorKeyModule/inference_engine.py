@@ -5,16 +5,42 @@ import math
 import os
 import sys
 
-import cv2
-import numpy as np
-import torch
-import torch.nn.functional as F
-import torchvision
-import torchvision.transforms.v2 as T
-import torchvision.transforms.v2.functional as TF
+# ROCm: must be set before importing torch so the CUDA allocator picks them up.
+# Detection: /opt/rocm (Linux), HIP_PATH (Windows default C:\hip), or explicit opt-in.
+_is_rocm_system = (
+    os.path.exists("/opt/rocm")
+    or os.environ.get("HIP_PATH") is not None
+    or os.environ.get("HIP_VISIBLE_DEVICES") is not None
+    or os.environ.get("CORRIDORKEY_ROCM") == "1"
+)
+if _is_rocm_system:
+    os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+    os.environ.setdefault("MIOPEN_FIND_MODE", "2")
+    os.environ.setdefault("MIOPEN_LOG_LEVEL", "0")
+    # Enable GTT (system RAM as GPU overflow) on Linux for 16GB cards.
+    # pytorch-rocm-gtt must be installed separately: pip install pytorch-rocm-gtt
+    try:
+        import pytorch_rocm_gtt
 
-from .core import color_utils as cu
-from .core.model_transformer import GreenFormer
+        pytorch_rocm_gtt.patch()
+    except ImportError:
+        pass
+
+# Persist torch.compile autotune cache across runs (default is /tmp which
+# gets wiped on reboot — saves 10-20 min re-autotuning on ROCm, ~30s on CUDA)
+_inductor_cache = os.path.join(os.path.expanduser("~"), ".cache", "corridorkey", "inductor")
+os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", _inductor_cache)
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+import torchvision  # noqa: E402
+import torchvision.transforms.v2 as T  # noqa: E402
+import torchvision.transforms.v2.functional as TF  # noqa: E402
+
+from .core import color_utils as cu  # noqa: E402
+from .core.model_transformer import GreenFormer  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +78,15 @@ class CorridorKeyEngine:
 
         self.model = self._load_model()
 
-        # We only tested compilation on Windows and Linux. For other platforms compilation is disabled as a precaution.
-        if sys.platform == "linux" or sys.platform == "win32":
+        is_rocm = hasattr(torch.version, "hip") and torch.version.hip
+
+        # torch.compile is tested on CUDA (Windows + Linux) and ROCm (Linux).
+        # ROCm on Windows hangs during Triton kernel compilation — skip it.
+        # CORRIDORKEY_SKIP_COMPILE=1 forces eager mode (useful for testing).
+        skip_compile = (is_rocm and sys.platform == "win32") or os.environ.get("CORRIDORKEY_SKIP_COMPILE") == "1"
+        if skip_compile:
+            logger.info("Skipping torch.compile (eager mode)")
+        elif sys.platform == "linux" or sys.platform == "win32":
             self._compile()
 
     def _load_model(self) -> GreenFormer:
@@ -116,20 +149,41 @@ class CorridorKeyEngine:
         return model
 
     def _compile(self):
+        is_rocm = hasattr(torch.version, "hip") and torch.version.hip
+        if is_rocm:
+            # "default" avoids the heavy autotuning that OOM-kills 16GB cards
+            # at 2048x2048. Still compiles Triton kernels, just skips the
+            # exhaustive benchmarking. HIP graphs are also avoided (segfault
+            # on large graphs — pytorch/pytorch#155720).
+            compile_mode = "default"
+        else:
+            compile_mode = "max-autotune"
+
         try:
-            compiled_model = torch.compile(self.model, mode="max-autotune")
-            # Trigger compilation with a dummy input
+            logger.info(
+                "Compiling model (mode=%s) — this may take 10-20 minutes on first run. "
+                "Compiled kernels are cached for future runs.",
+                compile_mode,
+            )
+            compiled_model = torch.compile(self.model, mode=compile_mode)
+            # Trigger compilation with a dummy input (the actual compile
+            # happens here, not in the torch.compile() call above)
             dummy_input = torch.zeros(
                 1, 4, self.img_size, self.img_size, dtype=self.model_precision, device=self.device
             )
             with torch.inference_mode():
                 compiled_model(dummy_input)
+            del dummy_input
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             self.model = compiled_model
+            logger.info("Model compiled successfully (mode=%s)", compile_mode)
 
         except Exception as e:
             logger.info(f"Compilation error: {e}")
             logger.warning("Model compilation failed. Falling back to eager mode.")
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _preprocess_input(
         self, image_batch: torch.Tensor, mask_batch_linear: torch.Tensor, input_is_linear: bool
