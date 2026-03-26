@@ -25,6 +25,20 @@ CorridorKey_remote.bat
 .ipynb_checkpoints/
 .DS_Store
 
+# Projects / user content
+Projects/
+
+# WebUI
+web/frontend/node_modules/
+web/frontend/build/
+web/frontend/.svelte-kit/
+
+# Deploy secrets and local weight copies — NEVER commit these
+deploy/.env
+deploy/.env.supabase
+deploy/.env.local
+deploy/weights/
+
 # IDE
 .vscode/
 .idea/
@@ -50,3 +64,4 @@ BiRefNetModule/checkpoints/*
 !BiRefNetModule/checkpoints/.gitkeep
 
 site
+.hypothesis

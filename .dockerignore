@@ -4,6 +4,7 @@
 .ruff_cache
 .uv-cache
 .venv
+.python-version
 __pycache__/
 *.pyc
 *.pyo
@@ -30,6 +31,15 @@ test_vram.py
 ClipsForInference/
 IgnoredClips/
 Output/
+Projects/
 CorridorKeyModule/checkpoints/
 gvm_core/weights/
 VideoMaMaInferenceModule/checkpoints/
+deploy/weights/
+
+# Playwright MCP logs/screenshots
+.playwright-mcp/
+
+# Frontend build artifacts (node_modules, not the build output)
+web/frontend/node_modules/
+web/frontend/.svelte-kit/

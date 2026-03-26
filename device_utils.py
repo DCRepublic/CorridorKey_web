@@ -2,6 +2,8 @@
 
 import logging
 import os
+import subprocess
+from dataclasses import dataclass
 
 import torch
 
@@ -65,6 +67,146 @@ def resolve_device(requested: str | None = None) -> str:
             )
 
     return device
+
+
+@dataclass
+class GPUInfo:
+    """Information about a single GPU."""
+
+    index: int
+    name: str
+    vram_total_gb: float
+    vram_free_gb: float
+
+
+def enumerate_gpus() -> list[GPUInfo]:
+    """List all available CUDA GPUs with VRAM info via nvidia-smi.
+
+    Falls back to torch.cuda if nvidia-smi is unavailable.
+    Returns an empty list on non-CUDA systems.
+    """
+    gpus: list[GPUInfo] = []
+
+    # Try nvidia-smi first (sees all GPUs regardless of CUDA_VISIBLE_DEVICES)
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,memory.total,memory.free",
+                "--format=csv,nounits,noheader",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.strip().split("\n"):
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 4:
+                    gpus.append(
+                        GPUInfo(
+                            index=int(parts[0]),
+                            name=parts[1],
+                            vram_total_gb=float(parts[2]) / 1024,
+                            vram_free_gb=float(parts[3]) / 1024,
+                        )
+                    )
+            return gpus
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Fallback to torch
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            props = torch.cuda.get_device_properties(i)
+            total = props.total_memory / (1024**3)
+            gpus.append(
+                GPUInfo(
+                    index=i,
+                    name=props.name,
+                    vram_total_gb=total,
+                    vram_free_gb=total,  # can't query free without setting device
+                )
+            )
+
+    return gpus
+
+
+@dataclass
+class CPUStats:
+    """System CPU and memory statistics."""
+
+    cpu_percent: float  # overall CPU usage 0-100
+    cpu_count: int
+    ram_total_gb: float
+    ram_used_gb: float
+    ram_free_gb: float
+
+    def to_dict(self) -> dict:
+        return {
+            "cpu_percent": round(self.cpu_percent, 1),
+            "cpu_count": self.cpu_count,
+            "ram_total_gb": round(self.ram_total_gb, 1),
+            "ram_used_gb": round(self.ram_used_gb, 1),
+            "ram_free_gb": round(self.ram_free_gb, 1),
+        }
+
+
+def get_cpu_stats() -> CPUStats:
+    """Get current CPU usage and memory stats."""
+    import psutil
+
+    cpu_pct = psutil.cpu_percent(interval=0)
+    mem = psutil.virtual_memory()
+    return CPUStats(
+        cpu_percent=cpu_pct,
+        cpu_count=psutil.cpu_count() or 1,
+        ram_total_gb=mem.total / (1024**3),
+        ram_used_gb=mem.used / (1024**3),
+        ram_free_gb=mem.available / (1024**3),
+    )
+
+
+def check_gpu_available(gpu_index: int = 0, min_free_gb: float = 0.0) -> tuple[bool, str]:
+    """Check if a GPU is available for CorridorKey work.
+
+    Checks GPU utilization via nvidia-smi. If another process is using
+    significant GPU compute (>50% utilization), the GPU is considered busy.
+
+    Returns:
+        (available, reason) — True if GPU can accept work, else False with reason.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                f"--id={gpu_index}",
+                "--query-gpu=utilization.gpu,memory.free",
+                "--format=csv,nounits,noheader",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return True, "nvidia-smi unavailable"
+
+        parts = [p.strip() for p in result.stdout.strip().split(",")]
+        if len(parts) < 2:
+            return True, "parse error"
+
+        util_pct = int(parts[0])
+        free_mb = float(parts[1])
+        free_gb = free_mb / 1024
+
+        if util_pct > 50:
+            return False, f"GPU {gpu_index} busy ({util_pct}% utilization)"
+        if min_free_gb > 0 and free_gb < min_free_gb:
+            return False, f"GPU {gpu_index} low VRAM ({free_gb:.1f}GB free, need {min_free_gb:.1f}GB)"
+        return True, "ok"
+
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True, "nvidia-smi unavailable"
 
 
 def clear_device_cache(device: torch.device | str) -> None:

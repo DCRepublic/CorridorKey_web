@@ -50,6 +50,18 @@ cuda = [
 mlx = [
     "corridorkey-mlx ; python_version >= '3.11'",
 ]
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "python-multipart>=0.0.9",
+    "PyJWT>=2.8",
+    "sentry-sdk[fastapi]>=2.0",
+    "psycopg2-binary>=2.9",
+    "alembic>=1.13",
+]
+s3 = [
+    "boto3>=1.34",
+]
 
 [dependency-groups]
 dev = ["pytest", "pytest-cov", "ruff", "hypothesis"]

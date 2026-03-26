@@ -66,6 +66,27 @@ else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _download_hf_repo(repo_id: str, target_dir: str) -> None:
+    """Download a HuggingFace repo to a local directory.
+
+    Used as a fallback when weight sync from the main server fails.
+    Works independently — nodes don't need the server to be up.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+
+        os.makedirs(target_dir, exist_ok=True)
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=target_dir,
+            local_dir_use_symlinks=False,
+        )
+        logger.info(f"Downloaded {repo_id} to {target_dir}")
+    except Exception as e:
+        logger.error(f"Failed to download {repo_id} from HuggingFace: {e}")
+        raise
+
+
 class _ActiveModel(Enum):
     """Tracks which heavy model is currently loaded in VRAM."""
 
@@ -96,11 +117,16 @@ class InferenceParams:
 
 @dataclass
 class OutputConfig:
-    """Which output types to produce and their format."""
+    """Which output types to produce and their format.
 
-    fg_enabled: bool = True
+    Defaults: Processed (comp-ready RGBA EXR) + Comp (PNG preview) enabled.
+    FG and Matte disabled by default — most users only need Processed.
+    Advanced users can enable FG/Matte for separate-pass compositing.
+    """
+
+    fg_enabled: bool = False
     fg_format: str = "exr"  # "exr" or "png"
-    matte_enabled: bool = True
+    matte_enabled: bool = False
     matte_format: str = "exr"
     comp_enabled: bool = True
     comp_format: str = "png"
@@ -314,6 +340,12 @@ class CorridorKeyService:
 
         from gvm_core import GVMProcessor
 
+        # Auto-download GVM weights from HuggingFace if missing
+        gvm_weights = os.path.join(BASE_DIR, "gvm_core", "weights")
+        if not os.path.isfile(os.path.join(gvm_weights, "unet", "config.json")):
+            logger.info("GVM weights not found — downloading from HuggingFace (geyongtao/gvm)...")
+            _download_hf_repo("geyongtao/gvm", gvm_weights)
+
         logger.info("Loading GVM processor...")
         t0 = time.monotonic()
         self._gvm_processor = GVMProcessor(device=self._device)
@@ -327,7 +359,16 @@ class CorridorKeyService:
         if self._videomama_pipeline is not None:
             return self._videomama_pipeline
 
-        sys.path.insert(0, os.path.join(BASE_DIR, "VideoMaMaInferenceModule"))
+        _vm_path = os.path.join(BASE_DIR, "VideoMaMaInferenceModule")
+        if _vm_path not in sys.path:
+            sys.path.insert(0, _vm_path)
+
+        # Auto-download VideoMaMa weights from HuggingFace if missing
+        vm_weights = os.path.join(BASE_DIR, "VideoMaMaInferenceModule", "checkpoints", "VideoMaMa")
+        if not os.path.isdir(vm_weights) or not os.listdir(vm_weights):
+            logger.info("VideoMaMa weights not found — downloading from HuggingFace (SammyLim/VideoMaMa)...")
+            _download_hf_repo("SammyLim/VideoMaMa", vm_weights)
+
         from VideoMaMaInferenceModule.inference import load_videomama_model
 
         logger.info("Loading VideoMaMa pipeline...")
@@ -419,8 +460,16 @@ class CorridorKeyService:
             ret, frame = alpha_cap.read()
             if not ret:
                 return None
-            return frame[:, :, 2].astype(np.float32) / 255.0
+            if frame.ndim == 2:
+                return frame.astype(np.float32) / 255.0
+            return frame[:, :, min(2, frame.shape[2] - 1)].astype(np.float32) / 255.0
         else:
+            if frame_index >= len(alpha_files):
+                logger.warning(
+                    f"Clip '{clip.name}': alpha frame_index {frame_index} out of range "
+                    f"(have {len(alpha_files)} alpha frames)"
+                )
+                return None
             fpath = os.path.join(clip.alpha_asset.path, alpha_files[frame_index])
             mask = read_mask_frame(fpath, clip.name, frame_index)
             validate_frame_read(mask, clip.name, frame_index, fpath)
@@ -479,6 +528,11 @@ class CorridorKeyService:
             os.replace(tmp_path, manifest_path)
         except Exception as e:
             logger.warning(f"Failed to write manifest: {e}")
+            # Clean up orphaned temp file
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def _write_outputs(
         self,
@@ -597,12 +651,12 @@ class CorridorKeyService:
         skipped: list[int] = []
         skip_stems = skip_stems or set()
 
-        # Determine frame range (in/out markers or full clip)
+        # Determine frame range — [start, end) exclusive end (matches Python slice convention)
         if frame_range is not None:
             range_start = max(0, frame_range[0])
-            range_end = min(num_frames - 1, frame_range[1])
-            frame_indices = range(range_start, range_end + 1)
-            range_count = range_end - range_start + 1
+            range_end = min(num_frames, frame_range[1])  # exclusive end, clamped to num_frames
+            frame_indices = range(range_start, range_end)
+            range_count = range_end - range_start
         else:
             frame_indices = range(num_frames)
             range_count = num_frames
@@ -708,7 +762,7 @@ class CorridorKeyService:
         )
 
         # State transition — only set COMPLETE if full clip was processed
-        is_full_clip = frame_range is None or (frame_range[0] == 0 and frame_range[1] >= num_frames - 1)
+        is_full_clip = frame_range is None or (frame_range[0] == 0 and frame_range[1] >= num_frames)
         if processed == range_count and is_full_clip:
             try:
                 clip.transition_to(ClipState.COMPLETE)
@@ -794,12 +848,14 @@ class CorridorKeyService:
 
     # --- GVM Alpha Generation ---
 
+
     def run_gvm(
         self,
         clip: ClipEntry,
         job: GPUJob | None = None,
         on_progress: Callable[[str, int, int], None] | None = None,
         on_warning: Callable[[str], None] | None = None,
+        frame_range: tuple[int, int] | None = None,
     ) -> None:
         """Run GVM auto alpha generation for a clip.
 
@@ -808,8 +864,9 @@ class CorridorKeyService:
         Args:
             clip: Must be in RAW state with input_asset.
             job: Optional GPUJob for cancel checking.
-            on_progress: Progress callback (GVM is monolithic, reports start/end).
+            on_progress: Progress callback.
             on_warning: Warning callback.
+            frame_range: Optional (start, end) to process a subset of frames (for sharding).
         """
         if clip.input_asset is None:
             raise CorridorKeyError(f"Clip '{clip.name}' missing input asset for GVM")
@@ -822,24 +879,90 @@ class CorridorKeyService:
         alpha_dir = os.path.join(clip.root_path, "AlphaHint")
         os.makedirs(alpha_dir, exist_ok=True)
 
-        if on_progress:
-            on_progress(clip.name, 0, 1)
+        # Get input path — if frame_range is given, create a temp dir with only those frames
+        input_path = clip.input_asset.path
+        is_sequence = os.path.isdir(input_path)
+        temp_dir = None
 
-        # Check cancel before starting
+        if frame_range and is_sequence:
+            input_path, temp_dir = self._subset_frames(input_path, frame_range)
+
+        try:
+            self._run_gvm_single(
+                gvm, clip, input_path, alpha_dir,
+                job, on_progress, on_warning,
+            )
+        finally:
+            if temp_dir:
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+        # Refresh alpha asset
+        clip.alpha_asset = ClipAsset(alpha_dir, "sequence")
+
+        # Report final progress with actual frame count
+        if on_progress and clip.alpha_asset:
+            fc = clip.alpha_asset.frame_count
+            on_progress(clip.name, fc, fc)
+
+        # Transition RAW → READY
+        try:
+            clip.transition_to(ClipState.READY)
+        except Exception as e:
+            if on_warning:
+                on_warning(f"State transition after GVM: {e}")
+
+        elapsed = time.monotonic() - t_start
+        logger.info(f"GVM complete for '{clip.name}': {clip.alpha_asset.frame_count} alpha frames in {elapsed:.1f}s")
+
+    def _subset_frames(self, input_path: str, frame_range: tuple[int, int]) -> tuple[str, str]:
+        """Create a temp directory with symlinks to a subset of input frames.
+
+        Returns (subset_dir, temp_base) — caller must clean up temp_base.
+        """
+        import tempfile
+
+        from .natural_sort import natsorted
+        from .project import is_image_file
+
+        all_frames = natsorted([f for f in os.listdir(input_path) if is_image_file(f)])
+        start, end = frame_range
+        subset = all_frames[start:end]
+
+        temp_base = tempfile.mkdtemp(prefix="ck-gvm-range-")
+        subset_dir = os.path.join(temp_base, "frames")
+        os.makedirs(subset_dir)
+
+        for fname in subset:
+            os.symlink(os.path.join(input_path, fname), os.path.join(subset_dir, fname))
+
+        logger.info(f"GVM frame range [{start}:{end}] — {len(subset)} of {len(all_frames)} frames")
+        return subset_dir, temp_base
+
+    def _run_gvm_single(self, gvm, clip, input_path, alpha_dir, job, on_progress, on_warning):
+        """Run GVM on all frames sequentially (batch=1, one frame at a time)."""
+        # Count frames to report accurate progress
+        if os.path.isdir(input_path):
+            from .project import is_image_file
+
+            frame_count = len([f for f in os.listdir(input_path) if is_image_file(f)])
+        else:
+            frame_count = 0
+        if on_progress:
+            on_progress(clip.name, 0, frame_count)
+
         if job and job.is_cancelled:
             raise JobCancelledError(clip.name, 0)
 
-        # Per-batch progress callback — GVM iterates over frames internally
         def _gvm_progress(batch_idx: int, total_batches: int) -> None:
             if on_progress:
                 on_progress(clip.name, batch_idx, total_batches)
-            # Check cancel between batches
             if job and job.is_cancelled:
                 raise JobCancelledError(clip.name, batch_idx)
 
         try:
             gvm.process_sequence(
-                input_path=clip.input_asset.path,
+                input_path=input_path,
                 output_dir=clip.root_path,
                 num_frames_per_batch=1,
                 decode_chunk_size=1,
@@ -856,21 +979,6 @@ class CorridorKeyService:
                 raise JobCancelledError(clip.name, 0) from None
             raise CorridorKeyError(f"GVM failed for '{clip.name}': {e}") from e
 
-        # Refresh alpha asset
-        clip.alpha_asset = ClipAsset(alpha_dir, "sequence")
-
-        if on_progress:
-            on_progress(clip.name, 1, 1)
-
-        # Transition RAW → READY
-        try:
-            clip.transition_to(ClipState.READY)
-        except Exception as e:
-            if on_warning:
-                on_warning(f"State transition after GVM: {e}")
-
-        elapsed = time.monotonic() - t_start
-        logger.info(f"GVM complete for '{clip.name}': {clip.alpha_asset.frame_count} alpha frames in {elapsed:.1f}s")
 
     # --- VideoMaMa Alpha Generation ---
 
@@ -992,7 +1100,9 @@ class CorridorKeyService:
             )
 
         # ── Phase 4: Inference (per-chunk) ──
-        sys.path.insert(0, os.path.join(BASE_DIR, "VideoMaMaInferenceModule"))
+        _vm_path = os.path.join(BASE_DIR, "VideoMaMaInferenceModule")
+        if _vm_path not in sys.path:
+            sys.path.insert(0, _vm_path)
         from VideoMaMaInferenceModule.inference import run_inference
 
         total_chunks = (num_frames + chunk_size - 1) // chunk_size

@@ -1,0 +1,43 @@
+# CorridorKey WebUI — main server
+#
+# Run:  docker compose -f deploy/docker-compose.web.yml up -d
+# Stop: docker compose -f deploy/docker-compose.web.yml down
+#
+# Copy deploy/.env.example to deploy/.env and edit before starting.
+
+services:
+  corridorkey-web:
+    image: ghcr.io/jamesnyevrguy/corridorkey-web:latest
+    restart: unless-stopped
+    ports:
+      - "${CK_PORT:-3000}:3000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - OPENCV_IO_ENABLE_OPENEXR=1
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - CK_CLIPS_DIR=/app/Projects
+      - CK_AUTH_TOKEN=${CK_AUTH_TOKEN:-}
+      - CK_METRICS_ENABLED=${CK_METRICS_ENABLED:-false}
+      - CK_LOG_FORMAT=${CK_LOG_FORMAT:-text}
+      - CK_DOCS_PUBLIC=${CK_DOCS_PUBLIC:-}
+      - CK_SENTRY_DSN=${CK_SENTRY_DSN:-}
+      - CK_ENVIRONMENT=${CK_ENVIRONMENT:-production}
+      - CK_STORAGE_BACKEND=${CK_STORAGE_BACKEND:-local}
+      - CK_S3_BUCKET=${CK_S3_BUCKET:-}
+      - CK_S3_PREFIX=${CK_S3_PREFIX:-}
+      - CK_S3_ENDPOINT_URL=${CK_S3_ENDPOINT_URL:-}
+      - CK_S3_REGION=${CK_S3_REGION:-us-east-1}
+      - CK_S3_ACCESS_KEY_ID=${CK_S3_ACCESS_KEY_ID:-}
+      - CK_S3_SECRET_ACCESS_KEY=${CK_S3_SECRET_ACCESS_KEY:-}
+    volumes:
+      - ${CK_PROJECTS_DIR:-./Projects}:/app/Projects
+      - ${CK_WEIGHTS_DIR:-./weights}/corridorkey:/app/CorridorKeyModule/checkpoints
+      - ${CK_WEIGHTS_DIR:-./weights}/gvm:/app/gvm_core/weights
+      - ${CK_WEIGHTS_DIR:-./weights}/videomama:/app/VideoMaMaInferenceModule/checkpoints/VideoMaMa
