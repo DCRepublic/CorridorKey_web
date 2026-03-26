@@ -29,8 +29,15 @@ jobs:
         include:
           - image: corridorkey-web
             dockerfile: web/Dockerfile.web
+            build-args-extra: ""
           - image: corridorkey-node
             dockerfile: web/Dockerfile.node
+            build-args-extra: "GPU_VENDOR=nvidia"
+            tag-suffix: "-nvidia"
+          - image: corridorkey-node
+            dockerfile: web/Dockerfile.node
+            build-args-extra: "GPU_VENDOR=amd"
+            tag-suffix: "-amd"
     steps:
       - uses: actions/checkout@v4
 
@@ -53,6 +60,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
+          flavor: |
+            suffix=${{ matrix.tag-suffix || '' }}
           tags: |
             type=ref,event=branch
             type=sha,prefix=
@@ -73,5 +82,6 @@ jobs:
           build-args: |
             BUILD_COMMIT=${{ github.sha }}
             BUILD_NUMBER=${{ steps.buildnum.outputs.ts }}
+            ${{ matrix.build-args-extra }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

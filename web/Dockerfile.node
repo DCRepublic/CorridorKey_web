@@ -5,10 +5,17 @@
 #
 # Security: runs as non-root (uid 1000), agent refuses to run as root.
 #
-# Build:  docker build -f web/Dockerfile.node -t corridorkey-node .
-# Run:    docker run --gpus all -e CK_MAIN_URL=http://host:3000 corridorkey-node
+# Build (NVIDIA): docker build -f web/Dockerfile.node -t corridorkey-node:nvidia .
+# Build (AMD):    docker build -f web/Dockerfile.node --build-arg GPU_VENDOR=amd -t corridorkey-node:amd .
+# Run (NVIDIA):   docker run --gpus all -e CK_MAIN_URL=http://host:3000 corridorkey-node:nvidia
+# Run (AMD):      docker run --device /dev/kfd --device /dev/dri -e CK_MAIN_URL=http://host:3000 corridorkey-node:amd
+
+ARG GPU_VENDOR=nvidia
 
 FROM ghcr.io/astral-sh/uv:0.7-python3.11-bookworm-slim
+
+# Re-declare after FROM (ARGs are reset by FROM)
+ARG GPU_VENDOR
 
 WORKDIR /app
 
@@ -25,10 +32,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies (as root, cacheable — only changes when pyproject.toml/uv.lock change)
+# Install Python dependencies — GPU vendor determines torch wheel source
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --extra cuda --no-install-project
+    if [ "$GPU_VENDOR" = "amd" ]; then \
+        uv sync --frozen --no-dev --no-install-project && \
+        uv pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/rocm6.3; \
+    else \
+        uv sync --frozen --no-dev --extra cuda --no-install-project; \
+    fi
 
 # Copy project source code with nodeuser ownership (avoids expensive chown layer)
 COPY --chown=nodeuser:nodeuser backend/ backend/
@@ -42,9 +54,13 @@ COPY --chown=nodeuser:nodeuser web/shared/ web/shared/
 COPY --chown=nodeuser:nodeuser web/node/ web/node/
 COPY --chown=nodeuser:nodeuser README.md ./
 
-# Install the project itself
+# Install the project itself (without re-installing torch)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --extra cuda
+    if [ "$GPU_VENDOR" = "amd" ]; then \
+        uv sync --frozen --no-dev; \
+    else \
+        uv sync --frozen --no-dev --extra cuda; \
+    fi
 
 # Ensure checkpoint and temp dirs exist with correct ownership
 RUN mkdir -p CorridorKeyModule/checkpoints \
@@ -69,5 +85,6 @@ ENV CK_MAIN_URL=http://localhost:3000
 ENV CK_NODE_NAME=docker-node
 ENV CK_NODE_GPUS=auto
 ENV CK_TEMP_DIR=/tmp/ck-work
+ENV CK_GPU_VENDOR=${GPU_VENDOR}
 
 CMD ["/app/.venv/bin/python", "-m", "web.node"]

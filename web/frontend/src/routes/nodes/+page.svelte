@@ -28,6 +28,8 @@
 	// Setup guide state
 	let showSetupGuide = $state(false);
 	let setupInfo = $state<{ main_url: string; image: string } | null>(null);
+	let gpuVendor = $state<'nvidia' | 'amd'>('nvidia');
+	let nodeImage = $derived(setupInfo ? setupInfo.image.replace(/:latest$/, `:${gpuVendor}`) : '');
 	let generatedToken = $state('');
 	let generatedTokenLabel = $state('');
 	let tokenLabel = $state('');
@@ -358,13 +360,19 @@
 				<!-- Step 2: Run the node -->
 				<div class="setup-step">
 					<h3 class="step-title mono">2. START THE NODE</h3>
-					<p class="step-desc">On the remote machine, run one of these:</p>
+					<p class="step-desc">Select your GPU type and save the compose file:</p>
+
+					<div class="gpu-vendor-select">
+						<button class="vendor-btn mono" class:active={gpuVendor === 'nvidia'} onclick={() => gpuVendor = 'nvidia'}>NVIDIA</button>
+						<button class="vendor-btn mono" class:active={gpuVendor === 'amd'} onclick={() => gpuVendor = 'amd'}>AMD</button>
+					</div>
 
 					<div class="code-block">
 						<span class="code-label mono">Docker Compose (save as docker-compose.yml)</span>
+						{#if gpuVendor === 'nvidia'}
 						<pre class="code mono">services:
   corridorkey-node:
-    image: {setupInfo.image}
+    image: {nodeImage}
     restart: unless-stopped
     labels:
       - com.centurylinklabs.watchtower.enable=true
@@ -399,6 +407,45 @@ volumes:
   ck-weights:
   ck-weights-gvm:
   ck-weights-vm:</pre>
+						{:else}
+						<pre class="code mono">services:
+  corridorkey-node:
+    image: {nodeImage}
+    restart: unless-stopped
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    security_opt:
+      - seccomp=unconfined
+    group_add:
+      - video
+    environment:
+      - CK_MAIN_URL={setupInfo.main_url}
+      - CK_AUTH_TOKEN={generatedToken || '<paste token here>'}
+      - CK_NODE_NAME={generatedTokenLabel || 'my-node'}
+      - CK_NODE_GPUS=auto
+    volumes:
+      - ck-weights:/app/CorridorKeyModule/checkpoints
+      - ck-weights-gvm:/app/gvm_core/weights
+      - ck-weights-vm:/app/VideoMaMaInferenceModule/checkpoints
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=300
+      - WATCHTOWER_LABEL_ENABLE=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  ck-weights:
+  ck-weights-gvm:
+  ck-weights-vm:</pre>
+						{/if}
 						<p class="code-hint mono">docker compose up -d</p>
 					</div>
 				</div>
@@ -1698,6 +1745,20 @@ volumes:
 	}
 	.btn-copy:hover { background: var(--accent-muted); }
 
+	.gpu-vendor-select {
+		display: flex; gap: var(--sp-2); margin-bottom: var(--sp-3);
+	}
+	.vendor-btn {
+		flex: 1; padding: 8px; font-size: 11px; letter-spacing: 0.08em;
+		background: var(--surface-2); border: 1px solid var(--border);
+		border-radius: var(--radius-sm); color: var(--text-secondary);
+		cursor: pointer; transition: all 0.15s;
+	}
+	.vendor-btn:hover { border-color: var(--text-tertiary); color: var(--text-primary); }
+	.vendor-btn.active {
+		background: var(--accent-muted); border-color: var(--accent);
+		color: var(--accent); font-weight: 600;
+	}
 	.code-block {
 		display: flex; flex-direction: column; gap: 4px;
 	}
