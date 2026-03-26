@@ -16,11 +16,13 @@ from .deps import get_queue
 logger = logging.getLogger(__name__)
 
 # Limits per tier: max_frames per clip, max concurrent jobs (running + queued)
+# Base limits per tier. Actual frame limit = base + frames contributed by user's nodes.
+# A member who contributes 3000 frames via their node gets 500 + 3000 = 3500 frame limit.
 TIER_LIMITS = {
     "pending": {"max_frames": 0, "max_concurrent": 0},  # can't submit
-    "member": {"max_frames": 2000, "max_concurrent": 5},
-    "contributor": {"max_frames": 5000, "max_concurrent": 10},
-    "org_admin": {"max_frames": 10000, "max_concurrent": 15},
+    "member": {"max_frames": 500, "max_concurrent": 3},  # ~17 min GPU time — enough for a test shot
+    "contributor": {"max_frames": 2000, "max_concurrent": 5},
+    "org_admin": {"max_frames": 5000, "max_concurrent": 10},
     "platform_admin": {"max_frames": 0, "max_concurrent": 0},  # 0 = unlimited
 }
 
