@@ -17,7 +17,7 @@ from backend.project import projects_root
 
 from . import persist
 from .database import get_storage
-from .deps import get_queue, get_service
+from .deps import get_service, get_state
 from .metrics import router as metrics_router
 from .reaper import start_reaper
 from .routes import admin, auth, clips, jobs, nodes, nodes_mgmt, orgs, preview, projects, system, upload
@@ -129,11 +129,13 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     manager.set_loop(loop)
 
-    queue = get_queue()
+    state = get_state()
+    queue = state.jobs
 
     # Restore job history from storage
     saved_history = get_storage().load_job_history()
     if saved_history:
+        restored: list[GPUJob] = []
         for jd in saved_history:
             job = GPUJob(
                 job_type=JobType(jd["job_type"]),
@@ -150,7 +152,8 @@ async def lifespan(app: FastAPI):
             job.completed_at = jd.get("completed_at", 0)
             job.submitted_by = jd.get("submitted_by")
             job.org_id = jd.get("org_id")
-            queue._history.append(job)
+            restored.append(job)
+        queue.restore_history(restored)
         logger.info(f"Restored {len(saved_history)} jobs from history")
 
     # Save history, track credits, and fire webhooks on job completion
@@ -205,7 +208,7 @@ async def lifespan(app: FastAPI):
     queue.on_error = _persist_history_err
 
     worker_thread, stop_event = start_worker(service, queue, clips_dir)
-    reaper_thread = start_reaper(queue, stop_event)
+    reaper_thread = start_reaper(queue, state.nodes, stop_event)
 
     app.state.clips_dir = clips_dir
     app.state.worker_thread = worker_thread

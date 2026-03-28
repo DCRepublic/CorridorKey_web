@@ -15,8 +15,7 @@ import time
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse
 
-from .deps import get_queue
-from .nodes import registry
+from .deps import get_node_state, get_queue
 from .ws import manager
 
 METRICS_ENABLED = os.environ.get("CK_METRICS_ENABLED", "false").strip().lower() in ("true", "1", "yes")
@@ -178,7 +177,7 @@ def prometheus_metrics(request: Request):
             )
 
     # ── Nodes ───────────────────────────────────────────────────
-    nodes = registry.list_nodes()
+    nodes = get_node_state().list_nodes()
     online = sum(1 for n in nodes if n.is_alive and n.status == "online")
     busy = sum(1 for n in nodes if n.is_alive and n.status == "busy")
     offline = sum(1 for n in nodes if not n.is_alive)
@@ -235,7 +234,7 @@ def prometheus_metrics(request: Request):
             lines.append(_header("corridorkey_node_failed_jobs", "Node failed job count", "counter"))
             lines.append(_header("corridorkey_node_total_frames", "Total frames processed by node", "counter"))
             for rep in reps:
-                node = registry.get_node(rep.node_id)
+                node = get_node_state().get_node(rep.node_id)
                 name = node.name if node else rep.node_id
                 nl = f'node="{name}",node_id="{rep.node_id}"'
                 lines.append(_l("corridorkey_node_reputation", rep.score, nl))

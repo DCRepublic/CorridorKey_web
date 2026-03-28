@@ -12,8 +12,7 @@ from backend.job_queue import GPUJob, JobType
 
 from ..auth import get_current_user
 from ..credit_guard import check_credit_balance, estimate_gpu_seconds
-from ..deps import get_queue, get_service
-from ..nodes import registry
+from ..deps import get_node_state, get_queue, get_service
 from ..schemas import (
     ExtractJobRequest,
     GVMJobRequest,
@@ -74,7 +73,7 @@ def _job_to_schema(job: GPUJob, is_admin: bool = False) -> JobSchema:
     # Resolve node ID to display name
     claimed = job.claimed_by
     if claimed and claimed != "local":
-        node = registry.get_node(claimed)
+        node = get_node_state().get_node(claimed)
         claimed = node.name if node else claimed
 
     # Compute duration and fps
@@ -261,7 +260,9 @@ def submit_sharded_inference(req: ShardedInferenceRequest, request: Request):
 
     # Remote nodes — only online, not busy, not paused, accepting inference
     online_nodes = [
-        n for n in registry.list_nodes() if n.can_accept_jobs and n.accepts_job_type("inference") and n.status != "busy"
+        n
+        for n in get_node_state().list_nodes()
+        if n.can_accept_jobs and n.accepts_job_type("inference") and n.status != "busy"
     ]
     for node in online_nodes:
         if node.gpus:
@@ -423,7 +424,7 @@ def _gpu_speed_weights(job_type: str) -> dict[str, float]:
             and j.claimed_by
             and j.claimed_by != "local"
         ):
-            node = registry.get_node(j.claimed_by)
+            node = get_node_state().get_node(j.claimed_by)
             if node and node.shared_storage:
                 # Shared storage = no transfer overhead, safe to use
                 duration = j.completed_at - j.started_at
@@ -491,7 +492,9 @@ def _get_available_gpus(job_type: str) -> list[str]:
             gpu_names.append("unknown")
 
     online_nodes = [
-        n for n in registry.list_nodes() if n.can_accept_jobs and n.accepts_job_type(job_type) and n.status != "busy"
+        n
+        for n in get_node_state().list_nodes()
+        if n.can_accept_jobs and n.accepts_job_type(job_type) and n.status != "busy"
     ]
     for node in online_nodes:
         if node.gpus:

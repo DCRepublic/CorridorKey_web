@@ -41,6 +41,14 @@ class NodeSchedule:
             "is_active_now": self.is_active_now,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> NodeSchedule:
+        return cls(
+            enabled=d.get("enabled", False),
+            start=d.get("start", "00:00"),
+            end=d.get("end", "23:59"),
+        )
+
 
 @dataclass
 class GPUSlot:
@@ -62,6 +70,17 @@ class GPUSlot:
             "status": self.status,
             "current_job_id": self.current_job_id,
         }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> GPUSlot:
+        return cls(
+            index=d.get("index", 0),
+            name=d.get("name", ""),
+            vram_total_gb=d.get("vram_total_gb", 0.0),
+            vram_free_gb=d.get("vram_free_gb", 0.0),
+            status=d.get("status", "idle"),
+            current_job_id=d.get("current_job_id"),
+        )
 
 
 @dataclass
@@ -162,6 +181,65 @@ class NodeInfo:
             "build_number": self.build_number,
             "version_ok": self.version_ok,
         }
+
+    def to_storage_dict(self) -> dict:
+        """Serialize for Redis/storage. Raw status (not computed), includes all fields."""
+        return {
+            "node_id": self.node_id,
+            "name": self.name,
+            "host": self.host,
+            "gpus": [g.to_dict() for g in self.gpus],
+            "gpu_name": self.gpu_name,
+            "vram_total_gb": self.vram_total_gb,
+            "vram_free_gb": self.vram_free_gb,
+            "status": self.status,
+            "current_job_id": self.current_job_id,
+            "last_heartbeat": self.last_heartbeat,
+            "capabilities": self.capabilities,
+            "shared_storage": self.shared_storage,
+            "org_id": self.org_id,
+            "visibility": self.visibility,
+            "paused": self.paused,
+            "schedule": {"enabled": self.schedule.enabled, "start": self.schedule.start, "end": self.schedule.end},
+            "accepted_types": self.accepted_types,
+            "agent_version": self.agent_version,
+            "build_number": self.build_number,
+            "version_ok": self.version_ok,
+            "cpu_stats": self.cpu_stats,
+            "health_history": self.health_history,
+            "recent_logs": self.recent_logs,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> NodeInfo:
+        """Reconstruct a NodeInfo from a dict. Inverse of to_storage_dict()."""
+        gpus = [GPUSlot.from_dict(g) for g in d.get("gpus", [])]
+        sched = d.get("schedule", {})
+        return cls(
+            node_id=d["node_id"],
+            name=d["name"],
+            host=d.get("host", ""),
+            gpus=gpus,
+            gpu_name=d.get("gpu_name", ""),
+            vram_total_gb=d.get("vram_total_gb", 0.0),
+            vram_free_gb=d.get("vram_free_gb", 0.0),
+            status=d.get("status", "online"),
+            current_job_id=d.get("current_job_id"),
+            last_heartbeat=d.get("last_heartbeat", 0.0),
+            capabilities=d.get("capabilities", []),
+            shared_storage=d.get("shared_storage"),
+            org_id=d.get("org_id"),
+            visibility=d.get("visibility", "private"),
+            paused=d.get("paused", False),
+            schedule=NodeSchedule.from_dict(sched),
+            accepted_types=d.get("accepted_types", []),
+            agent_version=d.get("agent_version", ""),
+            build_number=d.get("build_number", 0),
+            version_ok=d.get("version_ok", True),
+            cpu_stats=d.get("cpu_stats", {}),
+            health_history=d.get("health_history", []),
+            recent_logs=d.get("recent_logs", []),
+        )
 
     def to_safe_dict(self) -> dict:
         """Redacted version for WebSocket broadcasts to non-admin org members."""
@@ -287,7 +365,3 @@ class NodeRegistry:
     def online_count(self) -> int:
         with self._lock:
             return sum(1 for n in self._nodes.values() if n.is_alive)
-
-
-# Global singleton
-registry = NodeRegistry()

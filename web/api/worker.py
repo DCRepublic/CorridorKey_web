@@ -10,10 +10,11 @@ from concurrent.futures import ThreadPoolExecutor
 from backend.clip_state import ClipAsset, ClipState
 from backend.errors import CorridorKeyError, JobCancelledError
 from backend.ffmpeg_tools import extract_frames
-from backend.job_queue import GPUJob, GPUJobQueue, JobStatus, JobType
+from backend.job_queue import GPUJob, JobStatus, JobType
 from backend.project import is_video_file
 from backend.service import CorridorKeyService, InferenceParams, OutputConfig
 
+from .state import JobState
 from .ws import manager
 
 logger = logging.getLogger(__name__)
@@ -249,7 +250,7 @@ def _execute_gpu_job(service: CorridorKeyService, job: GPUJob, clips_dir: str) -
     manager.send_clip_state_changed(job.clip_name, clip.state.value, org_id=job.org_id)
 
 
-def _chain_next_pipeline_step(job: GPUJob, queue: GPUJobQueue, clips_dir: str, service: CorridorKeyService) -> None:
+def _chain_next_pipeline_step(job: GPUJob, queue: JobState, clips_dir: str, service: CorridorKeyService) -> None:
     """If this was a pipeline job, submit the next step."""
     if not job.params.get("pipeline"):
         return
@@ -343,7 +344,7 @@ def _chain_next_pipeline_step(job: GPUJob, queue: GPUJobQueue, clips_dir: str, s
             )
 
 
-def _run_job(service: CorridorKeyService, job: GPUJob, queue: GPUJobQueue, clips_dir: str) -> None:
+def _run_job(service: CorridorKeyService, job: GPUJob, queue: JobState, clips_dir: str) -> None:
     """Run a single job (called from thread pool). Job must already be claimed."""
     manager.send_job_status(job.id, JobStatus.RUNNING.value, org_id=job.org_id)
 
@@ -416,7 +417,7 @@ def _detect_local_gpu_count() -> int:
 
 def worker_loop(
     service: CorridorKeyService,
-    queue: GPUJobQueue,
+    queue: JobState,
     clips_dir: str,
     stop_event: threading.Event,
     max_gpu_workers: int = 0,  # 0 = auto-detect (1 per GPU)
@@ -577,7 +578,7 @@ def worker_loop(
 
 def start_worker(
     service: CorridorKeyService,
-    queue: GPUJobQueue,
+    queue: JobState,
     clips_dir: str,
 ) -> tuple[threading.Thread, threading.Event]:
     """Start the worker daemon thread. Returns (thread, stop_event)."""

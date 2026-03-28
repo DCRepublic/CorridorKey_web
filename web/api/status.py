@@ -148,9 +148,9 @@ def _compute_status() -> StatusSnapshot:
 
     # Nodes
     try:
-        from .nodes import registry
+        from .deps import get_node_state
 
-        nodes = registry.list_nodes()
+        nodes = get_node_state().list_nodes()
         snap.nodes_total = len(nodes)
         snap.nodes_online = sum(1 for n in nodes if n.is_alive)
         snap.total_gpus = sum(len(n.gpus) if n.gpus else (1 if n.gpu_name else 0) for n in nodes if n.is_alive)

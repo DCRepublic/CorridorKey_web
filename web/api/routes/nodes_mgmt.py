@@ -21,8 +21,9 @@ from pydantic import BaseModel, field_validator
 
 from ..auth import AUTH_ENABLED, UserContext, get_current_user
 from ..database import get_storage
+from ..deps import get_node_state
 from ..node_tokens import get_node_token_store
-from ..nodes import NodeInfo, NodeSchedule, registry
+from ..nodes import NodeInfo, NodeSchedule
 from ..orgs import get_org_store
 from ..tier_guard import require_member
 from ..ws import manager
@@ -65,7 +66,7 @@ def _user_can_manage_node(user: UserContext | None, node: NodeInfo) -> bool:
 
 def _require_node_access(request: Request, node_id: str, manage: bool = False) -> NodeInfo:
     """Get a node and verify user access. Raises 404/403."""
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
     user = _get_user(request)
@@ -109,7 +110,7 @@ def list_managed_nodes(request: Request):
     the node. Only org admins/owners and platform admins see full details.
     """
     user = _get_user(request)
-    all_nodes = registry.list_nodes()
+    all_nodes = get_node_state().list_nodes()
     visible = [n for n in all_nodes if _user_can_see_node(user, n)]
     manageable = {n.node_id for n in all_nodes if _user_can_manage_node(user, n)}
     # Build org name lookup (CRKY-72)
@@ -264,7 +265,7 @@ def unregister_node(node_id: str, request: Request):
     """Remove a node — requires org admin."""
     node = _require_node_access(request, node_id, manage=True)
     oid = node.org_id
-    registry.unregister(node_id, dismiss=True)
+    get_node_state().unregister(node_id, dismiss=True)
     manager.send_node_offline(node_id, org_id=oid)
     return {"status": "unregistered"}
 

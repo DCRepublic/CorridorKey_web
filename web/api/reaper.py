@@ -10,9 +10,9 @@ from __future__ import annotations
 import logging
 import threading
 
-from backend.job_queue import GPUJobQueue, JobStatus
+from backend.job_queue import JobStatus
 
-from .nodes import registry
+from .state import JobState, NodeState
 from .ws import manager
 
 logger = logging.getLogger(__name__)
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _REAP_INTERVAL = 30  # seconds
 
 
-def _reap_once(queue: GPUJobQueue) -> None:
+def _reap_once(queue: JobState, nodes: NodeState) -> None:
     """Check for orphaned jobs and requeue them.
 
     Scans ALL running jobs (not just the first) to handle multi-GPU
@@ -32,7 +32,7 @@ def _reap_once(queue: GPUJobQueue) -> None:
         if job.claimed_by == "local":
             continue  # local jobs are managed by the worker thread
 
-        node = registry.get_node(job.claimed_by)
+        node = nodes.get_node(job.claimed_by)
         if node is None or not node.is_alive:
             logger.warning(f"Reaping orphan job [{job.id}]: node '{job.claimed_by}' is dead, requeuing")
             queue.requeue_job(job)
@@ -42,26 +42,26 @@ def _reap_once(queue: GPUJobQueue) -> None:
 
             record_job_failed(job.claimed_by)
             if node:
-                registry.set_idle(job.claimed_by)
+                nodes.set_idle(job.claimed_by)
 
 
-def reaper_loop(queue: GPUJobQueue, stop_event: threading.Event) -> None:
+def reaper_loop(queue: JobState, nodes: NodeState, stop_event: threading.Event) -> None:
     """Background thread that periodically checks for orphaned jobs."""
     logger.info(f"Job reaper started (interval: {_REAP_INTERVAL}s)")
     while not stop_event.is_set():
         stop_event.wait(_REAP_INTERVAL)
         if not stop_event.is_set():
             try:
-                _reap_once(queue)
+                _reap_once(queue, nodes)
             except Exception:
                 logger.exception("Reaper error")
 
 
-def start_reaper(queue: GPUJobQueue, stop_event: threading.Event) -> threading.Thread:
+def start_reaper(queue: JobState, nodes: NodeState, stop_event: threading.Event) -> threading.Thread:
     """Start the reaper daemon thread."""
     thread = threading.Thread(
         target=reaper_loop,
-        args=(queue, stop_event),
+        args=(queue, nodes, stop_event),
         daemon=True,
         name="job-reaper",
     )

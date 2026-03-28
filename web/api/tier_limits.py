@@ -30,15 +30,15 @@ TIER_LIMITS = {
 def _contributed_frames(user_id: str) -> int:
     """Total frames contributed by all nodes owned by this user's orgs."""
     try:
+        from .deps import get_node_state
         from .node_reputation import get_all_reputations
-        from .nodes import registry
         from .orgs import get_org_store
 
         store = get_org_store()
         user_orgs = {o.org_id for o in store.list_user_orgs(user_id)}
         total = 0
         for rep in get_all_reputations():
-            node = registry.get_node(rep.node_id)
+            node = get_node_state().get_node(rep.node_id)
             if node and node.org_id in user_orgs:
                 total += rep.total_frames
         return total

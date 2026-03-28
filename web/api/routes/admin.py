@@ -224,16 +224,15 @@ def get_platform_stats():
     all_users = user_store.list_users()
     all_orgs = org_store.list_orgs()
 
-    from ..deps import get_queue
+    from ..deps import get_node_state, get_queue
     from ..gpu_credits import get_all_credits
-    from ..nodes import registry
 
     all_credits = get_all_credits()
     total_contributed = sum(c.contributed_seconds for c in all_credits)
     total_consumed = sum(c.consumed_seconds for c in all_credits)
 
     queue = get_queue()
-    nodes = registry.list_nodes()
+    nodes = get_node_state().list_nodes()
 
     return {
         "users": {

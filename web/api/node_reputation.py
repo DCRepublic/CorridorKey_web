@@ -194,9 +194,9 @@ def record_security_warning(node_id: str, warnings: list[str]) -> None:
 def _auto_pause_node(node_id: str) -> None:
     """Auto-pause a node with low reputation."""
     try:
-        from .nodes import registry
+        from .deps import get_node_state
 
-        node = registry.get_node(node_id)
+        node = get_node_state().get_node(node_id)
         if node and not node.paused:
             node.paused = True
             logger.info(f"Auto-paused node {node_id} due to low reputation")

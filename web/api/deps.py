@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from backend.job_queue import GPUJobQueue
 from backend.service import CorridorKeyService
 
+from .state import JobState, NodeState, StateBackend, create_backend
+
 _service: CorridorKeyService | None = None
-_queue: GPUJobQueue | None = None
+_state: StateBackend | None = None
 
 
 def get_service() -> CorridorKeyService:
@@ -16,8 +17,23 @@ def get_service() -> CorridorKeyService:
     return _service
 
 
-def get_queue() -> GPUJobQueue:
-    global _queue
-    if _queue is None:
-        _queue = GPUJobQueue()
-    return _queue
+def get_state() -> StateBackend:
+    """Get the shared state backend (creates on first call based on CK_REDIS_URL)."""
+    global _state
+    if _state is None:
+        _state = create_backend()
+    return _state
+
+
+def get_node_state() -> NodeState:
+    """Get the node state backend."""
+    return get_state().nodes
+
+
+def get_queue() -> JobState:
+    """Get the job state backend.
+
+    Named get_queue() for backward compatibility with existing
+    Depends(get_queue) usage in route handlers.
+    """
+    return get_state().jobs

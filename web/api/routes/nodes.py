@@ -15,8 +15,8 @@ from backend.job_queue import JobStatus
 from backend.natural_sort import natsorted
 
 from ..database import get_storage
-from ..deps import get_queue, get_service
-from ..nodes import GPUSlot, NodeInfo, NodeSchedule, registry
+from ..deps import get_node_state, get_queue, get_service
+from ..nodes import GPUSlot, NodeInfo, NodeSchedule
 from ..org_isolation import resolve_node_clips_dir
 from ..path_security import safe_join
 from ..routes import clips as _clips_mod
@@ -108,7 +108,7 @@ def _node_clips_dir(node_id: str, org_id: str | None = None, job_id: str | None 
         if job and job.org_id:
             return resolve_node_clips_dir(job.org_id)
     if not org_id:
-        node = registry.get_node(node_id)
+        node = get_node_state().get_node(node_id)
         if node and node.current_job_id:
             queue = get_queue()
             job = queue.find_job_by_id(node.current_job_id)
@@ -291,14 +291,14 @@ def register_node(req: NodeRegisterRequest, request: Request):
     if node_token and bound_node_id and bound_node_id != req.node_id:
         raise HTTPException(status_code=403, detail="This token is already bound to a different node")
 
-    registry.register(info)
+    get_node_state().register(info)
     # Associate the per-node token with this node_id
     if node_token:
         from ..node_tokens import get_node_token_store
 
         get_node_token_store().mark_used_by_node(node_token, req.node_id)
     # Re-fetch to get the merged state (register preserves UI-set fields on re-register)
-    node = registry.get_node(req.node_id)
+    node = get_node_state().get_node(req.node_id)
     if node:
         _restore_node_config(node)
         manager.send_node_update(node.to_dict(), org_id=node.org_id)
@@ -341,11 +341,11 @@ def node_heartbeat(node_id: str, req: NodeHeartbeatRequest, request: Request):
     """Update node heartbeat and VRAM status."""
     _check_node_identity(request, node_id)
     # 410 Gone = node was explicitly removed via UI, agent should shut down
-    if registry.is_dismissed(node_id):
+    if get_node_state().is_dismissed(node_id):
         raise HTTPException(status_code=410, detail="Node was removed — shutting down")
-    if not registry.heartbeat(node_id, req.vram_free_gb, req.status):
+    if not get_node_state().heartbeat(node_id, req.vram_free_gb, req.status):
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not registered")
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if node:
         if req.logs:
             node.append_logs(req.logs)
@@ -362,8 +362,8 @@ def node_heartbeat(node_id: str, req: NodeHeartbeatRequest, request: Request):
 @router.delete("/{node_id}")
 def unregister_node(node_id: str, request: Request):
     _check_node_identity(request, node_id)
-    node = registry.get_node(node_id)
-    registry.unregister(node_id, dismiss=True)
+    node = get_node_state().get_node(node_id)
+    get_node_state().unregister(node_id, dismiss=True)
     manager.send_node_offline(node_id, org_id=node.org_id if node else None)
     return {"status": "unregistered"}
 
@@ -372,7 +372,7 @@ def unregister_node(node_id: str, request: Request):
 def list_nodes(request: Request):
     """List registered nodes, filtered to the caller's org."""
     caller_org = getattr(request.state, "node_org_id", None)
-    nodes = registry.list_nodes()
+    nodes = get_node_state().list_nodes()
     if caller_org:
         nodes = [n for n in nodes if n.org_id == caller_org or n.visibility == "shared"]
     return [n.to_dict() for n in nodes]
@@ -382,7 +382,7 @@ def list_nodes(request: Request):
 def get_node_health(node_id: str, request: Request):
     """Get health history for a node (last 60 snapshots, ~10 min at 10s intervals)."""
     _check_node_identity(request, node_id)
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
     return {"history": node.health_history}
@@ -392,7 +392,7 @@ def get_node_health(node_id: str, request: Request):
 def get_node_logs(node_id: str, request: Request):
     """Get recent log lines from a node."""
     _check_node_identity(request, node_id)
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
     return {"logs": node.recent_logs}
@@ -411,7 +411,7 @@ class NodeScheduleRequest(BaseModel):
 def pause_node(node_id: str, request: Request):
     """Pause a node — it won't receive new jobs until resumed."""
     _check_node_identity(request, node_id)
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
     node.paused = True
@@ -424,7 +424,7 @@ def pause_node(node_id: str, request: Request):
 def resume_node(node_id: str, request: Request):
     """Resume a paused node."""
     _check_node_identity(request, node_id)
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
     node.paused = False
@@ -437,7 +437,7 @@ def resume_node(node_id: str, request: Request):
 def get_node_schedule(node_id: str, request: Request):
     """Get a node's active hours schedule."""
     _check_node_identity(request, node_id)
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
     return node.schedule.to_dict()
@@ -447,7 +447,7 @@ def get_node_schedule(node_id: str, request: Request):
 def set_node_schedule(node_id: str, req: NodeScheduleRequest, request: Request):
     """Set a node's active hours schedule."""
     _check_node_identity(request, node_id)
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
     node.schedule = NodeSchedule(enabled=req.enabled, start=req.start, end=req.end)
@@ -464,7 +464,7 @@ class AcceptedTypesRequest(BaseModel):
 def set_accepted_types(node_id: str, req: AcceptedTypesRequest, request: Request):
     """Set which job types a node will accept. Empty list = all types."""
     _check_node_identity(request, node_id)
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if not node:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
     node.accepted_types = req.accepted_types
@@ -487,7 +487,7 @@ async def get_next_job(node_id: str, request: Request):
     import asyncio as _asyncio
 
     _check_node_identity(request, node_id)
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     if not node or not node.is_alive:
         raise HTTPException(status_code=404, detail="Node not registered or offline")
 
@@ -523,7 +523,7 @@ async def get_next_job(node_id: str, request: Request):
         return {"job": None}
 
     # Assign the job to this node
-    registry.set_busy(node_id, job.id)
+    get_node_state().set_busy(node_id, job.id)
     manager.send_job_status(job.id, JobStatus.RUNNING.value, org_id=job.org_id)
 
     # Build job payload with file info
@@ -582,7 +582,7 @@ def report_job_result(node_id: str, req: JobResultRequest, request: Request):
         # Job may have been reaped and re-completed by another worker.
         # The node still did valid work (files already uploaded), so accept gracefully.
         logger.warning(f"Node {node_id} reported result for unknown job {req.job_id} (may have been reaped)")
-        registry.set_idle(node_id)
+        get_node_state().set_idle(node_id)
         return {"status": "ok"}
 
     # Verify this node is the one assigned to the job (prevents credit fraud).
@@ -594,7 +594,7 @@ def report_job_result(node_id: str, req: JobResultRequest, request: Request):
 
     import time
 
-    node = registry.get_node(node_id)
+    node = get_node_state().get_node(node_id)
     elapsed = time.time() - job.started_at if job.started_at else 0
 
     if req.status == "completed" or req.status == "cancelled":
@@ -630,7 +630,7 @@ def report_job_result(node_id: str, req: JobResultRequest, request: Request):
 
         record_job_failed(node_id)
 
-    registry.set_idle(node_id)
+    get_node_state().set_idle(node_id)
 
     # Trigger pipeline chaining if applicable
     from ..worker import _chain_next_pipeline_step
