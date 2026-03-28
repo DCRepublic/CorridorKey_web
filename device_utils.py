@@ -3,8 +3,11 @@
 import json
 import logging
 import os
-import subprocess
+import sys
 from dataclasses import dataclass
+from subprocess import TimeoutExpired
+
+from web.shared.subprocess_utils import run_silent as subprocess_run
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +126,7 @@ class GPUInfo:
 def _enumerate_nvidia() -> list[GPUInfo] | None:
     """Enumerate NVIDIA GPUs via nvidia-smi. Returns None if unavailable."""
     try:
-        result = subprocess.run(
+        result = subprocess_run(
             [
                 "nvidia-smi",
                 "--query-gpu=index,name,memory.total,memory.free",
@@ -148,18 +151,57 @@ def _enumerate_nvidia() -> list[GPUInfo] | None:
                     )
                 )
         return gpus
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, TimeoutExpired):
+        return None
+
+
+def _enumerate_amd_windows() -> list[GPUInfo] | None:
+    """Enumerate AMD GPUs on Windows via registry. Returns None if unavailable.
+
+    Win32_VideoController.AdapterRAM is uint32 and overflows for >4GB GPUs.
+    The registry stores the real VRAM size as qwMemorySize (64-bit).
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        gpus: list[GPUInfo] = []
+        base_key = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base_key)
+        for i in range(20):
+            try:
+                subkey = winreg.OpenKey(key, f"{i:04d}")
+                provider, _ = winreg.QueryValueEx(subkey, "ProviderName")
+                if "AMD" not in provider.upper() and "ATI" not in provider.upper():
+                    continue
+                desc, _ = winreg.QueryValueEx(subkey, "DriverDesc")
+                total_gb = 0
+                # Try 64-bit value first, then 32-bit fallback
+                for reg_name in ("HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize"):
+                    try:
+                        mem_bytes, _ = winreg.QueryValueEx(subkey, reg_name)
+                        total_gb = float(mem_bytes) / (1024**3)
+                        if total_gb > 0:
+                            break
+                    except OSError:
+                        continue
+                gpus.append(GPUInfo(index=len(gpus), name=desc, vram_total_gb=total_gb, vram_free_gb=total_gb))
+            except OSError:
+                continue
+        return gpus if gpus else None
+    except Exception:
         return None
 
 
 def _enumerate_amd() -> list[GPUInfo] | None:
     """Enumerate AMD GPUs via amd-smi (ROCm). Returns None if unavailable.
 
-    Tries amd-smi first (modern), then rocm-smi (legacy).
+    Tries amd-smi first (modern), then rocm-smi (legacy), then Windows WMI.
     """
     # Try amd-smi (ROCm 6.0+)
     try:
-        result = subprocess.run(
+        result = subprocess_run(
             ["amd-smi", "static", "--json"],
             capture_output=True,
             text=True,
@@ -180,7 +222,7 @@ def _enumerate_amd() -> list[GPUInfo] | None:
             if gpus:
                 # Try to get live VRAM usage from monitor
                 try:
-                    mon = subprocess.run(
+                    mon = subprocess_run(
                         ["amd-smi", "monitor", "--vram", "--json"],
                         capture_output=True,
                         text=True,
@@ -197,12 +239,12 @@ def _enumerate_amd() -> list[GPUInfo] | None:
                 except Exception:
                     pass
                 return gpus
-    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+    except (FileNotFoundError, TimeoutExpired, json.JSONDecodeError):
         pass
 
     # Fallback: rocm-smi (legacy, deprecated but still ships)
     try:
-        result = subprocess.run(
+        result = subprocess_run(
             ["rocm-smi", "--showid", "--showmeminfo", "vram", "--csv"],
             capture_output=True,
             text=True,
@@ -226,10 +268,11 @@ def _enumerate_amd() -> list[GPUInfo] | None:
                     )
             if gpus:
                 return gpus
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, TimeoutExpired):
         pass
 
-    return None
+    # Windows: no amd-smi/rocm-smi, fall back to WMI
+    return _enumerate_amd_windows()
 
 
 def enumerate_gpus() -> list[GPUInfo]:
@@ -250,20 +293,25 @@ def enumerate_gpus() -> list[GPUInfo]:
         return gpus
 
     # Fallback to torch (works for both NVIDIA and ROCm via HIP)
-    if torch.cuda.is_available():
-        fallback: list[GPUInfo] = []
-        for i in range(torch.cuda.device_count()):
-            props = torch.cuda.get_device_properties(i)
-            total = props.total_memory / (1024**3)
-            fallback.append(
-                GPUInfo(
-                    index=i,
-                    name=props.name,
-                    vram_total_gb=total,
-                    vram_free_gb=total,  # can't query free without setting device
+    try:
+        if torch.cuda.is_available():
+            fallback: list[GPUInfo] = []
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                total = props.total_memory / (1024**3)
+                fallback.append(
+                    GPUInfo(
+                        index=i,
+                        name=props.name,
+                        vram_total_gb=total,
+                        vram_free_gb=total,  # can't query free without setting device
+                    )
                 )
-            )
-        return fallback
+            return fallback
+    except RuntimeError:
+        # AMD torch ships caffe2_nvrtc.dll (NVIDIA) which crashes on AMD-only machines.
+        # _lazy_init() fails with LoadLibrary error — fall through to empty list.
+        logger.debug("torch.cuda init failed (caffe2_nvrtc?), falling through", exc_info=True)
 
     return []
 
@@ -314,7 +362,7 @@ def check_gpu_available(gpu_index: int = 0, min_free_gb: float = 0.0) -> tuple[b
     """
     # Try NVIDIA
     try:
-        result = subprocess.run(
+        result = subprocess_run(
             [
                 "nvidia-smi",
                 f"--id={gpu_index}",
@@ -335,12 +383,12 @@ def check_gpu_available(gpu_index: int = 0, min_free_gb: float = 0.0) -> tuple[b
                 if min_free_gb > 0 and free_gb < min_free_gb:
                     return False, f"GPU {gpu_index} low VRAM ({free_gb:.1f}GB free, need {min_free_gb:.1f}GB)"
                 return True, "ok"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, TimeoutExpired):
         pass
 
     # Try AMD
     try:
-        result = subprocess.run(
+        result = subprocess_run(
             ["amd-smi", "monitor", "--gpu-use", "--vram", "--json"],
             capture_output=True,
             text=True,
@@ -354,7 +402,7 @@ def check_gpu_available(gpu_index: int = 0, min_free_gb: float = 0.0) -> tuple[b
                 if util_pct > 50:
                     return False, f"GPU {gpu_index} busy ({util_pct}% utilization)"
                 return True, "ok"
-    except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+    except (FileNotFoundError, TimeoutExpired, Exception):
         pass
 
     return True, "gpu monitoring unavailable"

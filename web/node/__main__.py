@@ -23,7 +23,7 @@ def _security_checks() -> None:
     log = logging.getLogger(__name__)
 
     # Refuse to run as root (uid 0) unless explicitly overridden
-    if os.getuid() == 0 and not os.environ.get("CK_ALLOW_ROOT", "").strip():
+    if hasattr(os, "getuid") and os.getuid() == 0 and not os.environ.get("CK_ALLOW_ROOT", "").strip():
         log.error(
             "Node agent is running as root (uid 0). This is a security risk. "
             "Run as a non-root user, or set CK_ALLOW_ROOT=true to override."
@@ -48,6 +48,8 @@ def _security_checks() -> None:
 
 
 def main() -> None:
+    import os
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
@@ -61,17 +63,48 @@ def main() -> None:
             "CK_MAIN_URL not set — defaulting to http://localhost:3000. Set CK_MAIN_URL to the main machine's address."
         )
 
-    agent = NodeAgent()
+    # Start tray icon if not explicitly disabled (e.g., Docker headless)
+    tray = None
+    if os.environ.get("CK_NO_TRAY", "").strip().lower() not in ("true", "1"):
+        try:
+            from .tray import TrayApp
+
+            tray = TrayApp()
+            tray.start()
+        except Exception:
+            logging.getLogger(__name__).debug("Tray icon unavailable", exc_info=True)
+
+    # Start auto-updater (only active in frozen/PyInstaller builds)
+    updater = None
+    try:
+        from .updater import UpdateChecker
+
+        updater = UpdateChecker(tray=tray)
+        updater.start()
+    except Exception:
+        logging.getLogger(__name__).debug("Auto-updater unavailable", exc_info=True)
+
+    agent = NodeAgent(tray=tray)
 
     def shutdown(signum, frame):
+        if updater:
+            updater.stop()
+        if tray:
+            tray.stop()
         agent.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, shutdown)
 
     agent.run()
 
 
 if __name__ == "__main__":
+    # Required for PyInstaller on Windows — must be first call.
+    # Prevents infinite subprocess spawn loop in frozen executables.
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     main()

@@ -27,8 +27,37 @@ from .weight_sync import sync_weights
 logger = logging.getLogger(__name__)
 
 
+def _load_embedded_version() -> dict[str, str]:
+    """Load version info from _version.env (embedded by CI in frozen builds)."""
+    import sys
+
+    # In frozen builds, _version.env is bundled by PyInstaller
+    if getattr(sys, "frozen", False):
+        version_path = os.path.join(sys._MEIPASS, "web", "node", "_version.env")
+    else:
+        version_path = os.path.join(os.path.dirname(__file__), "_version.env")
+
+    if os.path.isfile(version_path):
+        result = {}
+        with open(version_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    result[k.strip()] = v.strip()
+        return result
+    return {}
+
+
+_EMBEDDED_VERSION = _load_embedded_version()
+
+
 def _get_local_version() -> str:
-    """Detect version from git at runtime (dev mode)."""
+    """Detect version: embedded (frozen) > git (dev) > unknown."""
+    v = _EMBEDDED_VERSION.get("CK_BUILD_COMMIT")
+    if v:
+        return v[:12]
+
     try:
         import subprocess
 
@@ -44,7 +73,14 @@ def _get_local_version() -> str:
 
 
 def _get_local_build_number() -> int:
-    """Get git commit timestamp as build number (dev mode)."""
+    """Get build number: embedded (frozen) > git timestamp (dev) > 0."""
+    bn = _EMBEDDED_VERSION.get("CK_BUILD_NUMBER")
+    if bn:
+        try:
+            return int(bn)
+        except ValueError:
+            pass
+
     try:
         import subprocess
 
@@ -62,7 +98,7 @@ def _get_local_build_number() -> int:
 class NodeAgent:
     """Lightweight agent that connects to the main CorridorKey server."""
 
-    def __init__(self):
+    def __init__(self, tray=None):
         self.node_id = config.NODE_ID
         self.name = config.NODE_NAME
         self.main_url = config.MAIN_URL.rstrip("/")
@@ -70,12 +106,16 @@ class NodeAgent:
         self.poll_interval = config.POLL_INTERVAL
         self.heartbeat_interval = config.HEARTBEAT_INTERVAL
         self.file_transfer = FileTransfer(self.main_url, self.node_id, auth_token=config.AUTH_TOKEN)
+        self.tray = tray  # Optional TrayApp instance for status updates
 
         self._stop = threading.Event()
         self._dismissed = False  # Set when server returns 410 (explicitly removed)
         self._gpu_indices = self._resolve_gpus()
         self._busy_gpus: set[int] = set()  # GPU indices currently processing
         self._busy_lock = threading.Lock()
+
+        if self.tray:
+            self.tray.set_server_url(self.main_url)
 
     def _resolve_gpus(self) -> list[int]:
         """Determine which GPUs to use based on config."""
@@ -151,9 +191,9 @@ class NodeAgent:
             "shared_storage": self.shared_storage,
             "accepted_types": [t.strip() for t in config.ACCEPTED_TYPES.split(",") if t.strip()],
             "security": {
-                "running_as_root": os.getuid() == 0,
+                "running_as_root": getattr(os, "getuid", lambda: -1)() == 0,
                 "hardened": os.environ.get("CK_NODE_HARDENED", "").strip().lower() in ("true", "1"),
-                "uid": os.getuid(),
+                "uid": getattr(os, "getuid", lambda: -1)(),
                 "read_only_fs": not os.access("/", os.W_OK),
                 "agent_version": os.environ.get("CK_BUILD_COMMIT", "").strip() or _get_local_version(),
                 "build_number": int(os.environ.get("CK_BUILD_NUMBER", "0").strip() or "0") or _get_local_build_number(),
@@ -165,6 +205,11 @@ class NodeAgent:
             r.raise_for_status()
             data = r.json()
             logger.info(f"Registered as '{self.name}' ({self.node_id}) with {len(gpu_slots)} GPU(s)")
+            if self.tray:
+                self.tray.set_status("idle")
+                if gpu_slots:
+                    g = gpu_slots[0]
+                    self.tray.set_gpu_info(g.get("name", ""), g.get("vram_free_gb", 0))
             # Log any security warnings from the server
             for w in data.get("security_warnings", []):
                 logger.warning(f"Server security warning: {w}")
@@ -176,6 +221,14 @@ class NodeAgent:
                     f"server: {server_v}. Consider updating the node."
                 )
             return True
+        except httpx.HTTPStatusError as e:
+            detail = ""
+            try:
+                detail = e.response.json().get("detail", e.response.text)
+            except Exception:
+                detail = e.response.text
+            logger.error(f"Registration failed ({e.response.status_code}): {detail}")
+            return False
         except Exception as e:
             logger.error(f"Registration failed: {e}")
             return False
@@ -241,6 +294,8 @@ class NodeAgent:
 
     def _report_progress(self, job_id: str, current: int, total: int) -> bool:
         """Report progress. Returns False if the job was cancelled server-side."""
+        if self.tray and current > 0:
+            self.tray.set_progress(job_id, current, total)
         try:
             params = {"job_id": job_id, "current": current, "total": total}
             r = self._api("post", f"/api/nodes/{self.node_id}/job-progress", params=params)
@@ -265,6 +320,13 @@ class NodeAgent:
         return False
 
     def _report_result(self, job_id: str, status: str, error: str | None = None) -> None:
+        if self.tray:
+            if status == "completed":
+                self.tray.job_completed(job_id, 0)
+            elif status == "failed":
+                self.tray.job_failed(job_id, error or "Unknown error")
+            else:
+                self.tray.set_status("idle")
         try:
             payload = {"job_id": job_id, "status": status, "error_message": error}
             self._api("post", f"/api/nodes/{self.node_id}/job-result", json=payload)
@@ -599,6 +661,11 @@ class NodeAgent:
         _MAX_IDLE_INTERVAL = 10.0  # max seconds between polls when idle
         logger.info(f"Polling for jobs... ({len(self._gpu_indices)} GPU(s) available)")
         while not self._stop.is_set() and not self._dismissed:
+            # Tray pause — skip polling but keep heartbeat alive
+            if self.tray and self.tray.paused:
+                self._stop.wait(self.poll_interval)
+                continue
+
             # Check if we have an idle GPU
             with self._busy_lock:
                 idle_gpus = [g for g in self._gpu_indices if g not in self._busy_gpus]
