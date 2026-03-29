@@ -23,6 +23,7 @@ if getattr(sys, "frozen", False):
         def _frozen_find_libraries(*shortnames):
             """Find ROCm DLLs in the PyInstaller bundle's torch/lib/ directory."""
             from pathlib import Path
+
             from rocm_sdk._dist_info import ALL_LIBRARIES
 
             paths = []
