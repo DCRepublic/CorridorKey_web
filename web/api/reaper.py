@@ -3,12 +3,16 @@
 Runs as a background thread on the server. Every 30 seconds, checks
 all running jobs: if the claiming node's heartbeat has timed out,
 the job is returned to the front of the queue.
+
+In multi-instance mode (Redis), a distributed lock ensures only one
+instance runs the reaper at a time (CRKY-105 Phase 4).
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+import uuid
 
 from backend.job_queue import JobStatus
 
@@ -18,6 +22,55 @@ from .ws import manager
 logger = logging.getLogger(__name__)
 
 _REAP_INTERVAL = 30  # seconds
+_LOCK_KEY = "ck:lock:reaper"
+_LOCK_TTL_MS = 25000  # must be < _REAP_INTERVAL * 1000 to prevent deadlock
+
+# Lua script: release lock only if we still own it (value matches our UUID)
+_LUA_RELEASE_LOCK = """\
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
+def _acquire_lock() -> str | None:
+    """Try to acquire the distributed reaper lock via Redis.
+
+    Returns the lock token (UUID) on success, None if another instance holds it.
+    No-op (always succeeds) when Redis is not configured (single-instance mode).
+    """
+    from .redis_client import get_redis, is_redis_configured
+
+    if not is_redis_configured():
+        return "local"  # single-instance, always allowed
+
+    r = get_redis()
+    if r is None:
+        return "local"
+
+    token = uuid.uuid4().hex
+    acquired = r.set(_LOCK_KEY, token, nx=True, px=_LOCK_TTL_MS)
+    if acquired:
+        return token
+    return None
+
+
+def _release_lock(token: str) -> None:
+    """Release the distributed reaper lock if we still own it."""
+    from .redis_client import get_redis, is_redis_configured
+
+    if not is_redis_configured() or token == "local":
+        return
+
+    r = get_redis()
+    if r is None:
+        return
+
+    try:
+        r.eval(_LUA_RELEASE_LOCK, 1, _LOCK_KEY, token)
+    except Exception:
+        logger.debug("Failed to release reaper lock", exc_info=True)
 
 
 def _reap_once(queue: JobState, nodes: NodeState) -> None:
@@ -51,10 +104,16 @@ def reaper_loop(queue: JobState, nodes: NodeState, stop_event: threading.Event) 
     while not stop_event.is_set():
         stop_event.wait(_REAP_INTERVAL)
         if not stop_event.is_set():
+            token = _acquire_lock()
+            if token is None:
+                logger.debug("Reaper lock held by another instance, skipping")
+                continue
             try:
                 _reap_once(queue, nodes)
             except Exception:
                 logger.exception("Reaper error")
+            finally:
+                _release_lock(token)
 
 
 def start_reaper(queue: JobState, nodes: NodeState, stop_event: threading.Event) -> threading.Thread:
