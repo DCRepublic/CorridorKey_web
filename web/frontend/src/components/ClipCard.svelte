@@ -16,9 +16,9 @@
 	let color = $derived(stateColors[clip.state] ?? 'var(--text-tertiary)');
 	let thumbUrl = $derived(
 		clip.has_outputs
-			? api.preview.url(clip.name, 'comp', 0)
+			? api.preview.url(clip.name, 'comp', 0, 512)
 			: clip.frame_count > 0
-				? api.preview.url(clip.name, 'input', 0)
+				? api.preview.url(clip.name, 'input', 0, 512)
 				: null
 	);
 </script>

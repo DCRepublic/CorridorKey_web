@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
 import subprocess
 import tempfile
 import threading
+import time
 import zipfile
 
 import cv2
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
+from starlette.responses import StreamingResponse
 
 from backend.frame_io import read_image_frame
 from backend.natural_sort import natsorted
@@ -98,8 +101,19 @@ def _frame_to_png_bytes(img: np.ndarray) -> bytes:
 # --- Single frame preview ---
 
 
+def _resize_if_needed(img: np.ndarray, width: int | None) -> np.ndarray:
+    """Downscale image to target width, preserving aspect ratio. No-op if width is None or larger than image."""
+    if width is None or width <= 0:
+        return img
+    h, w = img.shape[:2]
+    if width >= w:
+        return img
+    new_h = int(h * width / w)
+    return cv2.resize(img, (width, new_h), interpolation=cv2.INTER_AREA)
+
+
 @router.get("/{clip_name}/{pass_name}/{frame:int}")
-def get_preview_frame(clip_name: str, pass_name: str, frame: int, request: Request):
+def get_preview_frame(clip_name: str, pass_name: str, frame: int, request: Request, width: int | None = None):
     if pass_name not in _PASS_MAP:
         raise HTTPException(status_code=400, detail=f"Unknown pass: {pass_name}. Valid: {list(_PASS_MAP.keys())}")
 
@@ -125,6 +139,7 @@ def get_preview_frame(clip_name: str, pass_name: str, frame: int, request: Reque
             img = img[:, :, 0]
         if img.dtype != np.uint8:
             img = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+        img = _resize_if_needed(img, width)
         success, buf = cv2.imencode(".png", img)
         if not success:
             raise HTTPException(status_code=500, detail="PNG encode failed")
@@ -134,6 +149,7 @@ def get_preview_frame(clip_name: str, pass_name: str, frame: int, request: Reque
     if img is None:
         raise HTTPException(status_code=500, detail="Failed to read frame")
 
+    img = _resize_if_needed(img, width)
     return Response(content=_frame_to_png_bytes(img), media_type="image/png")
 
 
@@ -318,7 +334,61 @@ def get_preview_video(clip_name: str, pass_name: str, request: Request, fps: int
     return FileResponse(cache_path, media_type="video/mp4", filename=f"{clip_name}_{pass_name}.mp4")
 
 
-# --- Download (ZIP) ---
+# --- Download (ZIP) with per-user throttling ---
+
+_MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("CK_MAX_CONCURRENT_DOWNLOADS", "2"))
+_DOWNLOAD_RATE_BYTES = int(os.environ.get("CK_DOWNLOAD_RATE_BYTES", str(10 * 1024 * 1024)))  # 10 MB/s default
+_download_slots: dict[str, list[float]] = {}  # {user_id: [start_timestamps]}
+_download_lock = threading.Lock()
+_DOWNLOAD_SLOT_TIMEOUT = 600  # auto-release after 10 minutes
+
+
+def _acquire_download_slot(user_id: str) -> None:
+    """Acquire a download slot. Raises 429 if limit exceeded."""
+    now = time.time()
+    with _download_lock:
+        slots = _download_slots.get(user_id, [])
+        slots = [t for t in slots if now - t < _DOWNLOAD_SLOT_TIMEOUT]
+        _download_slots[user_id] = slots
+        if len(slots) >= _MAX_CONCURRENT_DOWNLOADS:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many concurrent downloads (max {_MAX_CONCURRENT_DOWNLOADS}). "
+                "Wait for current downloads to finish.",
+            )
+        slots.append(now)
+
+
+def _release_download_slot(user_id: str) -> None:
+    """Release the oldest download slot."""
+    with _download_lock:
+        slots = _download_slots.get(user_id, [])
+        if slots:
+            slots.pop(0)
+        if not slots:
+            _download_slots.pop(user_id, None)
+
+
+async def _throttled_file_stream(path: str, chunk_size: int = 64 * 1024):
+    """Stream a file with rate limiting."""
+    bytes_this_second = 0
+    second_start = time.monotonic()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+            bytes_this_second += len(chunk)
+            now = time.monotonic()
+            elapsed = now - second_start
+            if elapsed < 1.0 and bytes_this_second >= _DOWNLOAD_RATE_BYTES:
+                await asyncio.sleep(1.0 - elapsed)
+                bytes_this_second = 0
+                second_start = time.monotonic()
+            elif elapsed >= 1.0:
+                bytes_this_second = 0
+                second_start = now
 
 
 @router.get("/{clip_name}/{pass_name}/download")
@@ -331,10 +401,21 @@ def download_pass(clip_name: str, pass_name: str, request: Request):
     if clip_root is None:
         raise HTTPException(status_code=404, detail=f"Clip '{clip_name}' not found")
 
+    # Per-user concurrent download limit
+    from ..auth import AUTH_ENABLED, get_current_user
+
+    user_id = "anonymous"
+    if AUTH_ENABLED:
+        user = get_current_user(request)
+        if user:
+            user_id = user.user_id
+    _acquire_download_slot(user_id)
+
     target_dir = _resolve_pass_dir(clip_root, pass_name)
     files = natsorted(os.listdir(target_dir))
     files = [f for f in files if not f.startswith(".")]
     if not files:
+        _release_download_slot(user_id)
         raise HTTPException(status_code=404, detail=f"No files in {pass_name}")
 
     zip_name = f"{clip_name}_{pass_name}.zip"
@@ -347,11 +428,23 @@ def download_pass(clip_name: str, pass_name: str, request: Request):
                 fpath = os.path.join(target_dir, fname)
                 zf.write(fpath, arcname=os.path.join(pass_name, fname))
     except Exception as e:
+        _release_download_slot(user_id)
         raise HTTPException(status_code=500, detail="Failed to create ZIP") from e
 
-    return FileResponse(
-        zip_path,
+    file_size = os.path.getsize(zip_path)
+
+    async def stream_and_release():
+        try:
+            async for chunk in _throttled_file_stream(zip_path):
+                yield chunk
+        finally:
+            _release_download_slot(user_id)
+
+    return StreamingResponse(
+        stream_and_release(),
         media_type="application/zip",
-        filename=zip_name,
-        background=None,  # don't delete after send — cached
+        headers={
+            "Content-Disposition": f'attachment; filename="{zip_name}"',
+            "Content-Length": str(file_size),
+        },
     )

@@ -39,10 +39,24 @@ _MAX_ZIP_MEMBERS = 50_000  # sane limit for VFX sequences
 _MAX_EXTRACTED_BYTES = 20 * 1024**3  # 20 GB decompressed limit
 
 # Only extract files with these extensions from zips — reject everything else
-_ALLOWED_ZIP_EXTS = frozenset({
-    ".png", ".jpg", ".jpeg", ".exr", ".tif", ".tiff", ".bmp", ".dpx",  # images
-    ".mp4", ".mov", ".avi", ".mkv", ".mxf", ".webm",  # video (rare in zips but valid)
-})
+_ALLOWED_ZIP_EXTS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".exr",
+        ".tif",
+        ".tiff",
+        ".bmp",
+        ".dpx",  # images
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".mxf",
+        ".webm",  # video (rare in zips but valid)
+    }
+)
 
 
 def safe_extract_zip(zf: zipfile.ZipFile, target_dir: str) -> list[str]:
@@ -72,16 +86,16 @@ def safe_extract_zip(zf: zipfile.ZipFile, target_dir: str) -> list[str]:
         if file_count > _MAX_ZIP_MEMBERS:
             raise HTTPException(status_code=400, detail=f"Zip contains too many files (max {_MAX_ZIP_MEMBERS})")
 
-        # Skip files with disallowed extensions
-        ext = os.path.splitext(member.filename)[1].lower()
-        if ext not in _ALLOWED_ZIP_EXTS:
-            continue
-
-        # Validate file path
+        # Validate file path FIRST — path traversal must always raise
         member_path = os.path.join(target_dir, member.filename)
         resolved = os.path.realpath(member_path)
         if not resolved.startswith(target_resolved + os.sep):
             raise HTTPException(status_code=400, detail="Zip slip detected")
+
+        # Skip files with disallowed extensions (after path check)
+        ext = os.path.splitext(member.filename)[1].lower()
+        if ext not in _ALLOWED_ZIP_EXTS:
+            continue
 
         # Ensure parent directory exists
         os.makedirs(os.path.dirname(resolved), exist_ok=True)

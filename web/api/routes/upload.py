@@ -79,6 +79,20 @@ async def upload_video(file: UploadFile, request: Request, name: str | None = No
             except Exception as e:
                 raise HTTPException(status_code=500, detail="Failed to save upload") from e
 
+            # Validate video resolution, framerate, duration against tier limits (CRKY-146)
+            if is_video_file(tmp_path):
+                try:
+                    from backend.ffmpeg_tools import probe_video
+
+                    from ..tier_limits import check_video_limits
+
+                    video_info = probe_video(tmp_path)
+                    check_video_limits(request, video_info)
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass  # ffprobe not available — skip validation
+
             try:
                 clips_dir = resolve_clips_dir(request)
                 project_dir = create_project(

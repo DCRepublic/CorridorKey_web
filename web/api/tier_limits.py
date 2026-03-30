@@ -19,11 +19,41 @@ logger = logging.getLogger(__name__)
 # Base limits per tier. Actual frame limit = base + frames contributed by user's nodes.
 # A member who contributes 3000 frames via their node gets 500 + 3000 = 3500 frame limit.
 TIER_LIMITS = {
-    "pending": {"max_frames": 0, "max_concurrent": 0},  # can't submit
-    "member": {"max_frames": 500, "max_concurrent": 3},  # ~17 min GPU time — enough for a test shot
-    "contributor": {"max_frames": 2000, "max_concurrent": 5},
-    "org_admin": {"max_frames": 5000, "max_concurrent": 10},
-    "platform_admin": {"max_frames": 0, "max_concurrent": 0},  # 0 = unlimited
+    "pending": {
+        "max_frames": 0,
+        "max_concurrent": 0,
+        "max_resolution": 0,
+        "max_fps": 0,
+        "max_duration": 0,
+    },
+    "member": {
+        "max_frames": 500,
+        "max_concurrent": 3,
+        "max_resolution": 1080,
+        "max_fps": 60,
+        "max_duration": 30,
+    },
+    "contributor": {
+        "max_frames": 2000,
+        "max_concurrent": 5,
+        "max_resolution": 2160,
+        "max_fps": 60,
+        "max_duration": 120,
+    },
+    "org_admin": {
+        "max_frames": 5000,
+        "max_concurrent": 10,
+        "max_resolution": 4096,
+        "max_fps": 120,
+        "max_duration": 300,
+    },
+    "platform_admin": {
+        "max_frames": 0,
+        "max_concurrent": 0,
+        "max_resolution": 0,
+        "max_fps": 0,
+        "max_duration": 0,
+    },
 }
 
 
@@ -91,4 +121,56 @@ def check_tier_limits(request: Request, frame_count: int = 0) -> None:
                 status_code=429,
                 detail=f"You have {total} jobs running/queued (limit: {max_concurrent} for {user.tier} tier). "
                 f"Wait for current jobs to finish or contribute a GPU to increase your limit.",
+            )
+
+
+def check_video_limits(request: Request, video_info: dict) -> None:
+    """Validate video resolution, framerate, and duration against tier limits.
+
+    Called after upload, before frame extraction. Raises HTTP 413 on violation.
+    video_info should contain: width, height, fps, duration (from probe_video).
+    """
+    if not AUTH_ENABLED:
+        return
+
+    user = get_current_user(request)
+    if not user:
+        return
+
+    tier = user.tier
+    limits = TIER_LIMITS.get(tier, TIER_LIMITS.get("member", {}))
+
+    # Resolution check (max of width/height)
+    max_res = limits.get("max_resolution", 0)
+    if max_res > 0:
+        width = video_info.get("width", 0)
+        height = video_info.get("height", 0)
+        actual = max(width, height)
+        if actual > max_res:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Video resolution {width}x{height} exceeds your {tier} tier limit of {max_res}p. "
+                f"Please downscale your footage before uploading.",
+            )
+
+    # Framerate check
+    max_fps = limits.get("max_fps", 0)
+    if max_fps > 0:
+        fps = video_info.get("fps", 0)
+        if fps > max_fps:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Video framerate {fps:.1f}fps exceeds your {tier} tier limit of {max_fps}fps. "
+                f"Please re-encode at a lower framerate.",
+            )
+
+    # Duration check
+    max_duration = limits.get("max_duration", 0)
+    if max_duration > 0:
+        duration = video_info.get("duration", 0)
+        if duration > max_duration:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Video duration {duration:.0f}s exceeds your {tier} tier limit of {max_duration}s. "
+                f"Please trim your footage before uploading.",
             )
