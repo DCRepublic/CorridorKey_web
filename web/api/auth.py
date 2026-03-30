@@ -39,10 +39,12 @@ JWT_ALGORITHMS = ["HS256"]
 PUBLIC_PATHS = {
     "/api/auth/login",
     "/api/auth/signup",
+    "/api/auth/register",
     "/api/auth/refresh",
     "/api/auth/callback",
     "/api/auth/status",
     "/api/status",
+    "/api/status/badge",
     "/api/health",
     "/api/version",
     # /metrics is public for Prometheus scraping (same Docker network).
