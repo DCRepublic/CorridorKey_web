@@ -10,6 +10,7 @@
 	let error = $state('');
 	let loading = $state(false);
 	let tosAccepted = $state(false);
+	let created = $state(false);
 
 	async function handleSignup() {
 		if (!tosAccepted) {
@@ -41,7 +42,7 @@
 				return;
 			}
 
-			goto('/pending');
+			created = true;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Signup failed';
 		} finally {
@@ -66,6 +67,19 @@
 			<span class="beta-badge mono">BETA</span>
 		</div>
 		<p class="auth-subtitle">Create your account</p>
+
+		{#if created}
+			<div class="confirm-msg">
+				<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+					<circle cx="24" cy="24" r="20" stroke="var(--accent)" stroke-width="2" />
+					<path d="M24 14v4M24 22v10" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" />
+				</svg>
+				<h2 class="confirm-title">Check your email</h2>
+				<p class="confirm-text">
+					We sent a confirmation link to <strong>{email}</strong>. Click the link to verify your email, then <a href="/login">sign in</a> to continue.
+				</p>
+			</div>
+		{:else}
 
 		{#if error}
 			<div class="auth-error mono">{error}</div>
@@ -109,6 +123,8 @@
 				{loading ? 'Creating account...' : 'Create Account'}
 			</button>
 		</div>
+
+		{/if}
 
 		<div class="auth-footer">
 			<span>Already have an account? <a href="/login">Sign in</a></span>
@@ -235,6 +251,18 @@
 		accent-color: var(--accent);
 		cursor: pointer;
 	}
+
+	.confirm-msg {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--sp-3);
+		text-align: center;
+	}
+	.confirm-title { font-size: 18px; font-weight: 600; color: var(--text-primary); }
+	.confirm-text { font-size: 14px; color: var(--text-secondary); line-height: 1.5; }
+	.confirm-text a { color: var(--accent); }
+	.confirm-text strong { color: var(--text-primary); }
 
 	.auth-footer { font-size: 13px; color: var(--text-tertiary); }
 	.auth-footer a { color: var(--accent); }

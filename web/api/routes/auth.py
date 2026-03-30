@@ -460,7 +460,7 @@ def open_register(req: RegisterRequest):
             {
                 "email": req.email,
                 "password": req.password,
-                "email_confirm": True,
+                "email_confirm": False,  # require email verification before login
                 "app_metadata": {"tier": "pending"},
                 "user_metadata": {
                     "name": req.name,
