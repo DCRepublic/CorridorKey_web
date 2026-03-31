@@ -258,11 +258,15 @@ def submit_sharded_inference(req: ShardedInferenceRequest, request: Request):
         except Exception:
             gpu_weights.append(1.0)
 
-    # Remote nodes — only online, not busy, not paused, accepting inference
+    # Remote nodes — only online, not busy, not paused, accepting inference, visible to this org
+    active_org = request.headers.get("X-Org-Id", "").strip() or None
     online_nodes = [
         n
         for n in get_node_state().list_nodes()
-        if n.can_accept_jobs and n.accepts_job_type("inference") and n.status != "busy"
+        if n.can_accept_jobs
+        and n.accepts_job_type("inference")
+        and n.status != "busy"
+        and (not active_org or n.visibility == "shared" or n.org_id == active_org)
     ]
     for node in online_nodes:
         if node.gpus:
@@ -474,8 +478,12 @@ def _weighted_shard_sizes(frame_count: int, gpu_names: list[str], speed_map: dic
     return sizes
 
 
-def _get_available_gpus(job_type: str) -> list[str]:
-    """Get list of GPU model names for available workers (local + remote nodes)."""
+def _get_available_gpus(job_type: str, org_id: str | None = None) -> list[str]:
+    """Get list of GPU model names for available workers (local + remote nodes).
+
+    When org_id is provided, only counts nodes visible to that org
+    (shared nodes + private nodes belonging to that org).
+    """
     from ..worker import get_local_gpu_enabled
 
     gpu_names: list[str] = []
@@ -494,7 +502,10 @@ def _get_available_gpus(job_type: str) -> list[str]:
     online_nodes = [
         n
         for n in get_node_state().list_nodes()
-        if n.can_accept_jobs and n.accepts_job_type(job_type) and n.status != "busy"
+        if n.can_accept_jobs
+        and n.accepts_job_type(job_type)
+        and n.status != "busy"
+        and (not org_id or n.visibility == "shared" or n.org_id == org_id)
     ]
     for node in online_nodes:
         if node.gpus:
@@ -507,13 +518,15 @@ def _get_available_gpus(job_type: str) -> list[str]:
     return gpu_names
 
 
-def _build_gvm_jobs(clip_name: str, frame_count: int, extra_params: dict | None = None) -> list[GPUJob]:
+def _build_gvm_jobs(
+    clip_name: str, frame_count: int, extra_params: dict | None = None, org_id: str | None = None
+) -> list[GPUJob]:
     """Build GVM jobs for a clip, auto-sharding across available GPUs.
 
     Distributes frames proportionally to GPU speed (from job history).
     Falls back to even distribution when no history is available.
     """
-    gpu_names = _get_available_gpus("gvm_alpha")
+    gpu_names = _get_available_gpus("gvm_alpha", org_id=org_id)
     min_shard = 20
     params = dict(extra_params) if extra_params else {}
 
@@ -544,13 +557,15 @@ def _build_gvm_jobs(clip_name: str, frame_count: int, extra_params: dict | None 
     return [GPUJob(job_type=JobType.GVM_ALPHA, clip_name=clip_name, params=params)]
 
 
-def _build_inference_shards(clip_name: str, frame_count: int, extra_params: dict | None = None) -> list[GPUJob]:
+def _build_inference_shards(
+    clip_name: str, frame_count: int, extra_params: dict | None = None, org_id: str | None = None
+) -> list[GPUJob]:
     """Build inference jobs for a clip, auto-sharding across available GPUs.
 
     Distributes frames proportionally to GPU speed (from job history).
     Uses inclusive frame ranges (run_inference treats end as inclusive).
     """
-    gpu_names = _get_available_gpus("inference")
+    gpu_names = _get_available_gpus("inference", org_id=org_id)
     min_shard = 50
     params = dict(extra_params) if extra_params else {}
 
@@ -604,7 +619,8 @@ def submit_gvm(req: GVMJobRequest, request: Request):
             continue
         frame_count = clip.input_asset.frame_count if clip.input_asset else 0
         est = estimate_gpu_seconds("gvm_alpha", frame_count)
-        for job in _build_gvm_jobs(clip_name, frame_count):
+        gvm_org = request.headers.get("X-Org-Id", "").strip() or None
+        for job in _build_gvm_jobs(clip_name, frame_count, org_id=gvm_org):
             _stamp_job(job, request, estimated_seconds=est, frame_count=frame_count)
             if queue.submit(job):
                 submitted.append(_job_to_schema(job))
@@ -688,7 +704,8 @@ def submit_pipeline(req: PipelineJobRequest, request: Request):
                 ]
             else:
                 frame_count = clip.input_asset.frame_count if clip.input_asset else 0
-                jobs = _build_gvm_jobs(clip_name, frame_count, extra_params=pipeline_params)
+                pipe_org = request.headers.get("X-Org-Id", "").strip() or None
+                jobs = _build_gvm_jobs(clip_name, frame_count, extra_params=pipeline_params, org_id=pipe_org)
         elif state == "MASKED":
             jobs = [
                 GPUJob(
