@@ -248,20 +248,15 @@ class GPUJobQueue:
         claimer_id: str = "local",
         accepted_types: list[str] | None = None,
         org_id: str | None = None,
+        exclude_orgs: set[str] | None = None,
     ) -> GPUJob | None:
         """Atomically pop the next job and mark it as running.
-
-        This is the preferred method for distributed workers — it combines
-        next_job() + start_job() in a single lock acquisition so two
-        workers can't claim the same job.
-
-        Jobs with a preferred_node set will only be claimed by that node
-        (or "local"). Other claimers skip them.
 
         Args:
             claimer_id: Identifier of the worker claiming the job (node_id or "local").
             accepted_types: Job types this claimer can handle. None or empty = all types.
             org_id: Org filter — only claim jobs from this org. None = any org (CRKY-19).
+            exclude_orgs: Skip jobs from these orgs (shared node opt-out).
 
         Returns:
             The claimed job, or None if no claimable job is available.
@@ -282,6 +277,9 @@ class GPUJobQueue:
                     continue
                 # Skip jobs from other orgs (CRKY-19)
                 if org_id and job.org_id and job.org_id != org_id:
+                    continue
+                # Skip jobs from orgs that opted out of shared nodes
+                if exclude_orgs and job.org_id and job.org_id in exclude_orgs:
                     continue
                 import time
 

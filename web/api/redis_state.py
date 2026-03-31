@@ -52,12 +52,17 @@ local accepted_types_json = ARGV[2]
 local org_id = ARGV[3]
 local local_only_json = ARGV[4]
 local now = tonumber(ARGV[5])
+local exclude_orgs_json = ARGV[6]
 
 local accepted_types = {}
 if accepted_types_json ~= "" then
     accepted_types = cjson.decode(accepted_types_json)
 end
 local local_only = cjson.decode(local_only_json)
+local exclude_orgs = {}
+if exclude_orgs_json ~= nil and exclude_orgs_json ~= "" then
+    exclude_orgs = cjson.decode(exclude_orgs_json)
+end
 
 local function contains(arr, val)
     for _, v in ipairs(arr) do
@@ -83,6 +88,9 @@ for _, job_id in ipairs(job_ids) do
             skip = true
         end
         if not skip and #accepted_types > 0 and not contains(accepted_types, job.job_type) then
+            skip = true
+        end
+        if not skip and #exclude_orgs > 0 and not is_null(job.org_id) and contains(exclude_orgs, job.org_id) then
             skip = true
         end
         if not skip and org_id ~= "" and not is_null(job.org_id) and job.org_id ~= org_id then
@@ -394,6 +402,7 @@ class RedisJobState:
         claimer_id: str = "local",
         accepted_types: list[str] | None = None,
         org_id: str | None = None,
+        exclude_orgs: set[str] | None = None,
     ) -> GPUJob | None:
         job_id = run_script(
             "claim_job",
@@ -405,6 +414,7 @@ class RedisJobState:
                 org_id or "",
                 json.dumps(_LOCAL_ONLY_TYPES),
                 str(time.time()),
+                json.dumps(list(exclude_orgs)) if exclude_orgs else "",
             ],
         )
         if job_id is None:

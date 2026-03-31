@@ -68,6 +68,7 @@ class JobState(Protocol):
         claimer_id: str = "local",
         accepted_types: list[str] | None = None,
         org_id: str | None = None,
+        exclude_orgs: set[str] | None = None,
     ) -> GPUJob | None: ...
     def start_job(self, job: GPUJob) -> None: ...
     def complete_job(self, job: GPUJob) -> None: ...
@@ -219,8 +220,9 @@ class InMemoryJobState:
         claimer_id: str = "local",
         accepted_types: list[str] | None = None,
         org_id: str | None = None,
+        exclude_orgs: set[str] | None = None,
     ) -> GPUJob | None:
-        return self._queue.claim_job(claimer_id, accepted_types, org_id)
+        return self._queue.claim_job(claimer_id, accepted_types, org_id, exclude_orgs)
 
     def start_job(self, job: GPUJob) -> None:
         self._queue.start_job(job)

@@ -533,8 +533,20 @@ async def get_next_job(node_id: str, request: Request):
 
     if AUTH_ENABLED and not node.org_id and node.visibility != "shared":
         return {"job": None, "reason": "no_org"}
+    # Shared nodes: build exclusion list of orgs that opted out
+    exclude_orgs: set[str] = set()
+    if node.visibility == "shared":
+        from ..database import get_storage
+
+        org_prefs = get_storage().get_setting("org_preferences", {})
+        for oid, prefs in org_prefs.items():
+            if not prefs.get("allow_shared_nodes", True):
+                exclude_orgs.add(oid)
+
     claim_org = node.org_id if node.visibility != "shared" else None
-    job = queue.claim_job(node_id, accepted_types=node.accepted_types or None, org_id=claim_org)
+    job = queue.claim_job(
+        node_id, accepted_types=node.accepted_types or None, org_id=claim_org, exclude_orgs=exclude_orgs or None
+    )
     if job is None:
         return {"job": None}
 

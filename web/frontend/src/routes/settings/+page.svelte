@@ -10,6 +10,8 @@
 	import { onDestroy } from 'svelte';
 
 	let isAdmin = $state(false);
+	let allowSharedNodes = $state(true);
+	let activeOrgId = $state('');
 	let _activePolls: ReturnType<typeof setInterval>[] = [];
 
 	onDestroy(() => {
@@ -90,6 +92,37 @@
 		}
 	}
 
+	async function loadOrgPreferences() {
+		try {
+			const { getActiveOrgId } = await import('$lib/auth');
+			activeOrgId = getActiveOrgId() || '';
+			if (!activeOrgId) return;
+			const token = localStorage.getItem('ck:auth_token');
+			const res = await fetch(`/api/orgs/${activeOrgId}/preferences`, {
+				headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+			});
+			if (res.ok) {
+				const data = await res.json();
+				allowSharedNodes = data.allow_shared_nodes ?? true;
+			}
+		} catch { /* ignore */ }
+	}
+
+	async function saveSharedNodesPref() {
+		if (!activeOrgId) return;
+		try {
+			const token = localStorage.getItem('ck:auth_token');
+			await fetch(`/api/orgs/${activeOrgId}/preferences`, {
+				method: 'PUT',
+				headers: {
+					'Content-Type': 'application/json',
+					...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+				},
+				body: JSON.stringify({ allow_shared_nodes: allowSharedNodes }),
+			});
+		} catch { /* ignore */ }
+	}
+
 	onMount(() => {
 		const user = getStoredUser();
 		isAdmin = user?.tier === 'platform_admin';
@@ -97,6 +130,7 @@
 			loadWeights();
 			loadVramLimit();
 		}
+		loadOrgPreferences();
 	});
 </script>
 
@@ -167,6 +201,13 @@
 				<div class="toggle-label">
 					<span>Auto-shard inference across GPUs</span>
 					<span class="toggle-hint">When enabled, inference jobs automatically split across all available GPUs and nodes.</span>
+				</div>
+			</label>
+			<label class="toggle-row">
+				<input type="checkbox" bind:checked={allowSharedNodes} onchange={saveSharedNodesPref} class="toggle" />
+				<div class="toggle-label">
+					<span>Allow shared community nodes</span>
+					<span class="toggle-hint">When enabled, your jobs can be processed by community-contributed GPU nodes. Disable to only use your org's private nodes.</span>
 				</div>
 			</label>
 		</section>

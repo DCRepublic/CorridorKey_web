@@ -320,3 +320,49 @@ def delete_org_webhook(org_id: str, hook_id: str, request: Request):
     if not delete_webhook(hook_id):
         raise HTTPException(status_code=404, detail="Webhook not found")
     return {"status": "deleted"}
+
+
+# --- Org preferences ---
+
+
+class OrgPreferencesUpdate(BaseModel):
+    allow_shared_nodes: bool | None = None
+
+
+@router.get("/{org_id}/preferences", dependencies=[Depends(require_authenticated)])
+def get_org_preferences(org_id: str, request: Request):
+    """Get org processing preferences."""
+    user = _get_user(request)
+    store = get_org_store()
+    if not store.get_org(org_id):
+        raise HTTPException(status_code=404, detail="Org not found")
+    if not user.is_admin and not store.is_member(org_id, user.user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this org")
+    from ..database import get_storage
+
+    all_prefs = get_storage().get_setting("org_preferences", {})
+    prefs = all_prefs.get(org_id, {})
+    return {"allow_shared_nodes": prefs.get("allow_shared_nodes", True)}
+
+
+@router.put("/{org_id}/preferences", dependencies=[Depends(require_authenticated)])
+def update_org_preferences(org_id: str, req: OrgPreferencesUpdate, request: Request):
+    """Update org processing preferences. Requires org membership."""
+    user = _get_user(request)
+    store = get_org_store()
+    org = store.get_org(org_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Org not found")
+    # Only org owner or admin can change preferences
+    if not user.is_admin and org.owner_id != user.user_id:
+        raise HTTPException(status_code=403, detail="Only the org owner can change preferences")
+    from ..database import get_storage
+
+    storage = get_storage()
+    all_prefs = storage.get_setting("org_preferences", {})
+    prefs = all_prefs.get(org_id, {})
+    if req.allow_shared_nodes is not None:
+        prefs["allow_shared_nodes"] = req.allow_shared_nodes
+    all_prefs[org_id] = prefs
+    storage.set_setting("org_preferences", all_prefs)
+    return prefs
