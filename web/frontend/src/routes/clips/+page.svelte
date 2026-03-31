@@ -229,6 +229,25 @@
 	}
 	let collapsedProjects = $state<Set<string>>(new Set());
 
+	// Search + state filter
+	let searchQuery = $state('');
+	let stateFilter = $state<string>('all');
+
+	const STATES = ['RAW', 'READY', 'COMPLETE', 'ERROR', 'EXTRACTING', 'MASKED'];
+
+	let filteredProjects = $derived.by(() => {
+		if (!searchQuery && stateFilter === 'all') return projects;
+		const q = searchQuery.toLowerCase();
+		return projects.map(p => {
+			const filteredClips = p.clips.filter(c => {
+				if (stateFilter !== 'all' && c.state !== stateFilter) return false;
+				if (q && !c.name.toLowerCase().includes(q) && !p.display_name.toLowerCase().includes(q)) return false;
+				return true;
+			});
+			return { ...p, clips: filteredClips, clip_count: filteredClips.length };
+		}).filter(p => p.clips.length > 0 || (!q && stateFilter === 'all'));
+	});
+
 	const VIDEO_EXTS = ['.mp4', '.mov', '.avi', '.mkv', '.mxf', '.webm', '.m4v'];
 	const IMAGE_EXTS = ['.png', '.jpg', '.jpeg', '.exr', '.tif', '.tiff', '.bmp', '.dpx'];
 	const isVideo = (name: string) => VIDEO_EXTS.some(ext => name.toLowerCase().endsWith(ext));
@@ -415,6 +434,17 @@
 		</div>
 	{/if}
 
+	<!-- Search + state filter -->
+	<div class="filter-bar">
+		<input type="text" class="filter-search mono" placeholder="Search clips or projects..." bind:value={searchQuery} />
+		<div class="state-toggles">
+			<button class="state-btn mono" class:active={stateFilter === 'all'} onclick={() => stateFilter = 'all'}>All</button>
+			{#each STATES as s}
+				<button class="state-btn mono" class:active={stateFilter === s} data-state={s} onclick={() => stateFilter = stateFilter === s ? 'all' : s}>{s}</button>
+			{/each}
+		</div>
+	</div>
+
 	{#if hasSelection}
 		<div class="selection-bar">
 			<span class="selection-count mono">{selectedClips.size} clip{selectedClips.size !== 1 ? 's' : ''} selected</span>
@@ -449,18 +479,23 @@
 		</div>
 	{/if}
 
-	{#if projects.length === 0 && !loading}
+	{#if filteredProjects.length === 0 && !loading}
 		<div class="empty-state">
-			<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-				<rect x="6" y="10" width="36" height="28" rx="4" stroke="var(--text-tertiary)" stroke-width="1.5"/>
-				<path d="M14 10v28M34 10v28M6 19h8M34 19h8M6 29h8M34 29h8" stroke="var(--text-tertiary)" stroke-width="1.2"/>
-			</svg>
-			<p class="empty-text">No projects yet</p>
-			<p class="empty-hint">Drag & drop video files here, or click Upload to get started.</p>
+			{#if searchQuery || stateFilter !== 'all'}
+				<p class="empty-text">No clips match your filters</p>
+				<button class="btn-ghost-sm mono" onclick={() => { searchQuery = ''; stateFilter = 'all'; }}>Clear filters</button>
+			{:else}
+				<svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+					<rect x="6" y="10" width="36" height="28" rx="4" stroke="var(--text-tertiary)" stroke-width="1.5"/>
+					<path d="M14 10v28M34 10v28M6 19h8M34 19h8M6 29h8M34 29h8" stroke="var(--text-tertiary)" stroke-width="1.2"/>
+				</svg>
+				<p class="empty-text">No projects yet</p>
+				<p class="empty-hint">Drag & drop video files here, or click Upload to get started.</p>
+			{/if}
 		</div>
 	{:else}
 		<div class="project-list">
-			{#each projects as project (project.name)}
+			{#each filteredProjects as project (project.name)}
 				{@const collapsed = collapsedProjects.has(project.name)}
 				<div class="project-group">
 					<div class="project-header" role="button" tabindex="0" aria-expanded={!collapsed} onclick={() => toggleProject(project.name)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleProject(project.name); }}} oncontextmenu={(e) => showProjectContext(e, project)}>
@@ -578,6 +613,33 @@
 		align-items: center;
 		justify-content: space-between;
 	}
+
+	.filter-bar {
+		display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap;
+	}
+	.filter-search {
+		flex: 1; min-width: 180px; padding: 7px 10px; background: var(--surface-2);
+		border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary);
+		font-size: 12px; outline: none;
+	}
+	.filter-search:focus { border-color: var(--accent); }
+	.filter-search::placeholder { color: var(--text-tertiary); }
+	.state-toggles { display: flex; gap: 2px; }
+	.state-btn {
+		padding: 4px 8px; font-size: 10px; letter-spacing: 0.04em;
+		background: var(--surface-2); border: 1px solid var(--border); color: var(--text-tertiary);
+		cursor: pointer; transition: all 0.15s;
+	}
+	.state-btn:first-child { border-radius: 4px 0 0 4px; }
+	.state-btn:last-child { border-radius: 0 4px 4px 0; }
+	.state-btn:hover { color: var(--text-secondary); }
+	.state-btn.active { background: var(--surface-4); color: var(--text-primary); border-color: var(--text-tertiary); }
+	.state-btn[data-state="RAW"].active { color: var(--state-raw); }
+	.state-btn[data-state="READY"].active { color: var(--state-ready); }
+	.state-btn[data-state="COMPLETE"].active { color: var(--state-complete); }
+	.state-btn[data-state="ERROR"].active { color: var(--state-error); }
+	.state-btn[data-state="EXTRACTING"].active { color: var(--state-extracting); }
+	.state-btn[data-state="MASKED"].active { color: var(--state-masked); }
 
 	.header-left {
 		display: flex;
