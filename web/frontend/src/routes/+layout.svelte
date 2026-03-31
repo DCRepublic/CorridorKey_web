@@ -20,6 +20,7 @@
 	let authChecked = $state(false);
 	let authEnabled = $state(false);
 	let creditBalance = $state<{ hours: string; positive: boolean } | null>(null);
+	let banner = $state<{ message: string; level: string } | null>(null);
 
 	let connected = $state(false);
 
@@ -47,6 +48,16 @@
 	const _hasToken = () => !!localStorage.getItem('ck:auth_token');
 	let _storesInitialized = $state(false);
 
+	async function _fetchBanner() {
+		try {
+			const res = await fetch('/api/banner');
+			if (res.ok) {
+				const data = await res.json();
+				banner = data.message ? data : null;
+			}
+		} catch { /* ignore */ }
+	}
+
 	function _initAppStores() {
 		if (_storesInitialized) return;
 		_storesInitialized = true;
@@ -58,6 +69,7 @@
 		refreshNodes();
 		loadUserOrgs();
 		refreshCredits();
+		_fetchBanner();
 	}
 
 	// Re-check when navigating from public page (login/signup) to app page
@@ -139,6 +151,9 @@
 
 		authChecked = true;
 
+		// Fetch banner on all pages (public API, no auth needed)
+		_fetchBanner();
+
 		// Only connect and refresh stores on app pages, not login/signup/pending
 		if (isPublic) return;
 
@@ -206,6 +221,11 @@
 <div class="mobile-banner">
 	<span>CorridorKey is best experienced on desktop.</span>
 </div>
+{#if banner?.message}
+	<div class="site-banner" class:banner-warning={banner.level === 'warning'} class:banner-critical={banner.level === 'critical'}>
+		<span class="banner-text">{banner.message}</span>
+	</div>
+{/if}
 <div class="shell">
 	<nav class="sidebar">
 		<div class="sidebar-top">
@@ -652,6 +672,27 @@
 	}
 	.credit-indicator.positive .credit-amt { color: var(--state-complete); }
 	.credit-indicator.negative .credit-amt { color: var(--state-error); }
+
+	.site-banner {
+		padding: 8px 16px;
+		text-align: center;
+		font-size: 12px;
+		font-weight: 500;
+		background: rgba(59, 130, 246, 0.12);
+		color: #60a5fa;
+		border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+	}
+	.banner-warning {
+		background: rgba(255, 242, 3, 0.1);
+		color: var(--accent);
+		border-color: rgba(255, 242, 3, 0.2);
+	}
+	.banner-critical {
+		background: rgba(255, 82, 82, 0.1);
+		color: var(--state-error);
+		border-color: rgba(255, 82, 82, 0.2);
+	}
+	.banner-text { letter-spacing: 0.02em; }
 
 	.discord-link {
 		display: flex;

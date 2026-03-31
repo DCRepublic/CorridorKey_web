@@ -45,6 +45,7 @@ PUBLIC_PATHS = {
     "/api/auth/status",
     "/api/status",
     "/api/status/badge",
+    "/api/banner",
     "/api/health",
     "/api/version",
     # /metrics is public for Prometheus scraping (same Docker network).

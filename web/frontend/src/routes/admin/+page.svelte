@@ -25,13 +25,23 @@
 	const TIERS = ['pending', 'member', 'contributor', 'org_admin', 'platform_admin'];
 
 	let authorized = $state(false);
-	let activeTab = $state<'users' | 'orgs' | 'credits' | 'stats' | 'audit'>('users');
+	let activeTab = $state<'users' | 'orgs' | 'credits' | 'stats' | 'audit' | 'system'>('users');
 	let users = $state<UserRecord[]>([]);
 	let pendingUsers = $state<UserRecord[]>([]);
 	let orgs = $state<OrgRecord[]>([]);
 	let loading = $state(true);
 	let actionInProgress = $state<string | null>(null);
 	let inviteUrl = $state('');
+
+	// Banner + maintenance state
+	let bannerMessage = $state('');
+	let bannerLevel = $state<'info' | 'warning' | 'critical'>('info');
+	let bannerExpiry = $state('');
+	let maintenanceEnabled = $state(false);
+	let maintenanceStart = $state('');
+	let maintenanceEnd = $state('');
+	let maintenanceReason = $state('');
+	let maintenanceActive = $state(false);
 	let inviteGenerating = $state(false);
 	let invites = $state<{ token: string; created_at: number; used: boolean; used_by: string | null }[]>([]);
 
@@ -173,6 +183,59 @@
 		orgs = res.orgs;
 	}
 
+	async function loadBanner() {
+		try {
+			const res = await adminFetch('/api/admin/banner');
+			bannerMessage = res.message || '';
+			bannerLevel = res.level || 'info';
+			bannerExpiry = res.expires_at || '';
+		} catch { /* ignore */ }
+	}
+
+	async function saveBanner() {
+		await adminFetch('/api/admin/banner', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ message: bannerMessage, level: bannerLevel, expires_at: bannerExpiry || null }),
+		});
+	}
+
+	async function clearBanner() {
+		bannerMessage = '';
+		bannerExpiry = '';
+		await saveBanner();
+	}
+
+	async function loadMaintenance() {
+		try {
+			const res = await adminFetch('/api/admin/maintenance');
+			maintenanceEnabled = res.enabled || false;
+			maintenanceStart = res.starts_at || '';
+			maintenanceEnd = res.ends_at || '';
+			maintenanceReason = res.reason || '';
+			maintenanceActive = res.active || false;
+		} catch { /* ignore */ }
+	}
+
+	async function saveMaintenance() {
+		const res = await adminFetch('/api/admin/maintenance', {
+			method: 'PUT',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				enabled: maintenanceEnabled,
+				starts_at: maintenanceStart || null,
+				ends_at: maintenanceEnd || null,
+				reason: maintenanceReason,
+			}),
+		});
+		maintenanceActive = res.active || false;
+	}
+
+	async function disableMaintenance() {
+		maintenanceEnabled = false;
+		await saveMaintenance();
+	}
+
 	async function approveUser(userId: string) {
 		actionInProgress = userId;
 		try {
@@ -275,6 +338,11 @@
 					class:active={activeTab === 'audit'}
 					onclick={() => activeTab = 'audit'}
 				>AUDIT</button>
+				<button
+					class="tab-btn mono"
+					class:active={activeTab === 'system'}
+					onclick={() => { activeTab = 'system'; loadBanner(); loadMaintenance(); }}
+				>SYSTEM</button>
 			</div>
 		</div>
 
@@ -665,6 +733,65 @@
 					</div>
 				{/if}
 			</div>
+		{:else if activeTab === 'system'}
+			<!-- Banner -->
+			<div class="section">
+				<h2 class="section-title mono">SITE BANNER</h2>
+				<div class="system-form">
+					<label class="system-field">
+						<span class="field-label mono">MESSAGE</span>
+						<input type="text" bind:value={bannerMessage} placeholder="e.g. Scheduled maintenance tonight 10pm EST" class="system-input mono" />
+					</label>
+					<div class="system-row">
+						<label class="system-field">
+							<span class="field-label mono">LEVEL</span>
+							<select bind:value={bannerLevel} class="system-select mono">
+								<option value="info">Info (blue)</option>
+								<option value="warning">Warning (yellow)</option>
+								<option value="critical">Critical (red)</option>
+							</select>
+						</label>
+						<label class="system-field">
+							<span class="field-label mono">EXPIRES AT</span>
+							<input type="datetime-local" bind:value={bannerExpiry} class="system-input mono" />
+						</label>
+					</div>
+					<div class="system-actions">
+						<button class="btn btn-approve mono" onclick={saveBanner}>SET BANNER</button>
+						<button class="btn btn-reject mono" onclick={clearBanner}>CLEAR</button>
+					</div>
+				</div>
+			</div>
+
+			<!-- Maintenance Mode -->
+			<div class="section">
+				<h2 class="section-title mono">
+					MAINTENANCE MODE
+					{#if maintenanceActive}
+						<span class="status-live mono">ACTIVE</span>
+					{/if}
+				</h2>
+				<div class="system-form">
+					<label class="system-field">
+						<span class="field-label mono">REASON</span>
+						<input type="text" bind:value={maintenanceReason} placeholder="e.g. Server upgrade" class="system-input mono" />
+					</label>
+					<div class="system-row">
+						<label class="system-field">
+							<span class="field-label mono">STARTS AT</span>
+							<input type="datetime-local" bind:value={maintenanceStart} class="system-input mono" />
+						</label>
+						<label class="system-field">
+							<span class="field-label mono">ENDS AT</span>
+							<input type="datetime-local" bind:value={maintenanceEnd} class="system-input mono" />
+						</label>
+					</div>
+					<div class="system-actions">
+						<button class="btn btn-approve mono" onclick={() => { maintenanceEnabled = true; saveMaintenance(); }}>ENABLE</button>
+						<button class="btn btn-reject mono" onclick={disableMaintenance}>DISABLE</button>
+					</div>
+				</div>
+			</div>
 		{/if}
 	{/if}
 </div>
@@ -867,6 +994,26 @@
 	}
 	.btn-reject:hover:not(:disabled) {
 		background: rgba(255, 82, 82, 0.1);
+	}
+
+	/* System tab */
+	.system-form { display: flex; flex-direction: column; gap: var(--sp-3); }
+	.system-field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+	.system-row { display: flex; gap: var(--sp-3); }
+	.system-input {
+		padding: 8px 10px; background: var(--surface-3); border: 1px solid var(--border);
+		border-radius: 6px; color: var(--text-primary); font-size: 13px; outline: none;
+	}
+	.system-input:focus { border-color: var(--accent); }
+	.system-select {
+		padding: 8px 10px; background: var(--surface-3); border: 1px solid var(--border);
+		border-radius: 6px; color: var(--text-primary); font-size: 13px;
+	}
+	.system-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-1); }
+	.status-live {
+		font-size: 9px; padding: 2px 6px; border-radius: 4px;
+		background: rgba(255, 82, 82, 0.15); color: var(--state-error);
+		margin-left: var(--sp-2); letter-spacing: 0.08em;
 	}
 
 	.btn-primary {

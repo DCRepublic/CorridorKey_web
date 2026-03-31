@@ -390,6 +390,13 @@ def create_app() -> FastAPI:
         status_code = 200 if healthy else 503
         return JSONResponse(content={"healthy": healthy, "checks": checks}, status_code=status_code)
 
+    # Public banner endpoint (no auth required — shown on landing page)
+    @app.get("/api/banner")
+    def public_banner():
+        from .routes.admin import _get_active_banner
+
+        return _get_active_banner()
+
     # API routes
     app.include_router(auth.router)
     app.include_router(metrics_router)

@@ -500,6 +500,12 @@ async def get_next_job(node_id: str, request: Request):
     if not node.can_accept_jobs:
         return {"job": None, "reason": "paused" if node.paused else "outside_schedule"}
 
+    # Block during maintenance mode (CRKY-149)
+    from .admin import is_maintenance_active
+
+    if is_maintenance_active():
+        return {"job": None, "reason": "maintenance"}
+
     # Block outdated nodes from picking up jobs
     if not node.version_ok:
         return {"job": None, "reason": "outdated"}

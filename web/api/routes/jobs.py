@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_member)])
 
 
+def _check_maintenance() -> None:
+    """Reject job submissions during maintenance mode."""
+    from .admin import is_maintenance_active
+
+    if is_maintenance_active():
+        raise HTTPException(status_code=503, detail="Server is in maintenance mode. Please try again later.")
+
+
 def _stamp_job(job: GPUJob, request: Request | None, estimated_seconds: float = 0, frame_count: int = 0) -> GPUJob:
     """Set submitted_by and org_id from the authenticated user (CRKY-66).
 
@@ -194,6 +202,7 @@ def list_jobs(request: Request):
 @router.post("/inference", response_model=list[JobSchema], summary="Submit inference job")
 def submit_inference(req: InferenceJobRequest, request: Request):
     """Submit CorridorKey inference for one or more clips. Requires alpha hints to be ready."""
+    _check_maintenance()
     from ..org_isolation import resolve_clips_dir
 
     queue = get_queue()
@@ -239,6 +248,7 @@ def submit_sharded_inference(req: ShardedInferenceRequest, request: Request):
     Each shard processes a frame range independently. Only works for
     inference (GVM/VideoMaMa have temporal dependencies).
     """
+    _check_maintenance()
     queue = get_queue()
     service = get_service()
     submitted = []
@@ -598,12 +608,8 @@ def _build_inference_shards(
 
 @router.post("/gvm", response_model=list[JobSchema], summary="Submit GVM alpha generation")
 def submit_gvm(req: GVMJobRequest, request: Request):
-    """Generate alpha hints using Generative Video Matting.
-
-    Automatically shards across available nodes when multiple GPUs are
-    online. Each node processes a subset of frames independently (batch=1).
-    Falls back to single-node when no other GPUs are available.
-    """
+    """Generate alpha hints using Generative Video Matting."""
+    _check_maintenance()
     queue = get_queue()
     service = get_service()
     submitted = []
@@ -633,6 +639,7 @@ def submit_gvm(req: GVMJobRequest, request: Request):
 @router.post("/videomama", response_model=list[JobSchema], summary="Submit VideoMaMa alpha generation")
 def submit_videomama(req: VideoMaMaJobRequest, request: Request):
     """Generate alpha hints using VideoMaMa mask-driven matting for one or more clips."""
+    _check_maintenance()
     from ..org_isolation import resolve_clips_dir
 
     queue = get_queue()
@@ -668,6 +675,7 @@ def submit_pipeline(req: PipelineJobRequest, request: Request):
     pipeline params stored on the job). This ensures each step finishes
     before the next begins.
     """
+    _check_maintenance()
     from ..org_isolation import resolve_clips_dir
 
     queue = get_queue()
@@ -746,6 +754,7 @@ def submit_pipeline(req: PipelineJobRequest, request: Request):
 @router.post("/extract", response_model=list[JobSchema], summary="Submit frame extraction")
 def submit_extract(req: ExtractJobRequest, request: Request):
     """Extract frames from video source files for one or more clips."""
+    _check_maintenance()
     queue = get_queue()
     submitted = []
     for clip_name in req.clip_names:

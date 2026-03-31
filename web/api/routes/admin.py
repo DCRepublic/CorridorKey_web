@@ -463,3 +463,126 @@ def update_retention(req: RetentionPolicyUpdate):
         "delete_mode": policy.delete_mode,
         "check_interval": policy.check_interval,
     }
+
+
+# ---------------------------------------------------------------------------
+# Site-wide banner (CRKY-148)
+# ---------------------------------------------------------------------------
+
+_BANNER_KEY = "site_banner"
+
+
+class BannerUpdate(BaseModel):
+    message: str = ""
+    level: str = "info"  # info, warning, critical
+    expires_at: str | None = None  # ISO 8601 datetime or null
+
+
+def _get_active_banner() -> dict:
+    """Get the current banner if set and not expired."""
+    from ..database import get_storage
+
+    banner = get_storage().get_setting(_BANNER_KEY, {})
+    if not banner or not banner.get("message"):
+        return {"message": "", "level": "info", "expires_at": None}
+    if banner.get("expires_at"):
+        from datetime import datetime, timezone
+
+        try:
+            exp = datetime.fromisoformat(banner["expires_at"])
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) > exp:
+                return {"message": "", "level": "info", "expires_at": None}
+        except (ValueError, TypeError):
+            pass
+    return banner
+
+
+@router.get("/banner")
+def get_banner():
+    """Get current banner."""
+    return _get_active_banner()
+
+
+@router.put("/banner")
+def set_banner(req: BannerUpdate):
+    """Set or clear the site-wide banner."""
+    from ..database import get_storage
+
+    if req.level not in ("info", "warning", "critical"):
+        raise HTTPException(status_code=400, detail="level must be 'info', 'warning', or 'critical'")
+    banner = {"message": req.message, "level": req.level, "expires_at": req.expires_at}
+    get_storage().set_setting(_BANNER_KEY, banner)
+    return banner
+
+
+# ---------------------------------------------------------------------------
+# Maintenance mode (CRKY-149)
+# ---------------------------------------------------------------------------
+
+_MAINTENANCE_KEY = "maintenance_mode"
+
+
+class MaintenanceUpdate(BaseModel):
+    enabled: bool = False
+    starts_at: str | None = None  # ISO 8601
+    ends_at: str | None = None  # ISO 8601
+    reason: str = ""
+
+
+def is_maintenance_active() -> bool:
+    """Check if maintenance mode is currently active. Used by job dispatch."""
+    from ..database import get_storage
+
+    maint = get_storage().get_setting(_MAINTENANCE_KEY, {})
+    if not maint or not maint.get("enabled"):
+        return False
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    if maint.get("starts_at"):
+        try:
+            start = datetime.fromisoformat(maint["starts_at"])
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            if now < start:
+                return False
+        except (ValueError, TypeError):
+            pass
+    if maint.get("ends_at"):
+        try:
+            end = datetime.fromisoformat(maint["ends_at"])
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+            if now > end:
+                return False
+        except (ValueError, TypeError):
+            pass
+    return True
+
+
+@router.get("/maintenance")
+def get_maintenance():
+    """Get current maintenance mode status."""
+    from ..database import get_storage
+
+    maint = get_storage().get_setting(_MAINTENANCE_KEY, {})
+    if not maint:
+        return {"enabled": False, "starts_at": None, "ends_at": None, "reason": "", "active": False}
+    return {**maint, "active": is_maintenance_active()}
+
+
+@router.put("/maintenance")
+def set_maintenance(req: MaintenanceUpdate):
+    """Set or clear maintenance mode."""
+    from ..database import get_storage
+
+    maint = {
+        "enabled": req.enabled,
+        "starts_at": req.starts_at,
+        "ends_at": req.ends_at,
+        "reason": req.reason,
+    }
+    get_storage().set_setting(_MAINTENANCE_KEY, maint)
+    return {**maint, "active": is_maintenance_active()}
