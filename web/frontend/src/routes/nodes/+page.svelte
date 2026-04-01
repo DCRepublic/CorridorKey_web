@@ -316,26 +316,25 @@
 									<div class="score-breakdown">
 										<span class="info-label">Reputation</span>
 										<div class="score-bars">
-											{@const bd = node.reputation.breakdown}
-											<div class="score-bar-row">
+																						<div class="score-bar-row">
 												<span class="score-bar-label mono">Success</span>
-												<div class="score-bar"><div class="score-bar-fill success" style="width: {(bd?.success?.points ?? 0) / 50 * 100}%"></div></div>
-												<span class="score-bar-value mono">{bd?.success?.points ?? 0}/50</span>
+												<div class="score-bar"><div class="score-bar-fill success" style="width: {(node.reputation.breakdown?.success?.points ?? 0) / 50 * 100}%"></div></div>
+												<span class="score-bar-value mono">{node.reputation.breakdown?.success?.points ?? 0}/50</span>
 											</div>
 											<div class="score-bar-row">
 												<span class="score-bar-label mono">Speed</span>
-												<div class="score-bar"><div class="score-bar-fill speed" style="width: {(bd?.speed?.points ?? 0) / 20 * 100}%"></div></div>
-												<span class="score-bar-value mono">{bd?.speed?.points ?? 0}/20</span>
+												<div class="score-bar"><div class="score-bar-fill speed" style="width: {(node.reputation.breakdown?.speed?.points ?? 0) / 20 * 100}%"></div></div>
+												<span class="score-bar-value mono">{node.reputation.breakdown?.speed?.points ?? 0}/20</span>
 											</div>
 											<div class="score-bar-row">
 												<span class="score-bar-label mono">Uptime</span>
-												<div class="score-bar"><div class="score-bar-fill uptime" style="width: {(bd?.uptime?.points ?? 0) / 30 * 100}%"></div></div>
-												<span class="score-bar-value mono">{bd?.uptime?.points ?? 0}/30</span>
+												<div class="score-bar"><div class="score-bar-fill uptime" style="width: {(node.reputation.breakdown?.uptime?.points ?? 0) / 30 * 100}%"></div></div>
+												<span class="score-bar-value mono">{node.reputation.breakdown?.uptime?.points ?? 0}/30</span>
 											</div>
-											{#if bd?.security_penalty?.points}
+											{#if node.reputation.breakdown?.security_penalty?.points}
 												<div class="score-bar-row">
 													<span class="score-bar-label mono">Penalty</span>
-													<span class="score-bar-value mono penalty">{bd.security_penalty.points}</span>
+													<span class="score-bar-value mono penalty">{node.reputation.breakdown.security_penalty.points}</span>
 												</div>
 											{/if}
 										</div>
