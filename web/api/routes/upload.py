@@ -50,12 +50,18 @@ async def _save_upload(file: UploadFile, dest: str) -> None:
 
 
 @router.post("/video", summary="Upload video file")
-async def upload_video(file: UploadFile, request: Request, name: str | None = None, auto_extract: bool = True):
-    """Upload a video file to create a new project/clip.
+async def upload_video(
+    file: UploadFile,
+    request: Request,
+    name: str | None = None,
+    auto_extract: bool = True,
+    project: str | None = None,
+    folder: str | None = None,
+):
+    """Upload a video file. Adds to existing project if specified, else creates new.
 
-    The video is saved into a new project via create_project().
-    If auto_extract is True (default), a VIDEO_EXTRACT job is queued
-    to extract frames in the background.
+    When `project` is set, the clip is added to that existing project
+    (optionally inside `folder`). Otherwise creates a new project.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
@@ -95,12 +101,21 @@ async def upload_video(file: UploadFile, request: Request, name: str | None = No
 
             try:
                 clips_dir = resolve_clips_dir(request)
-                project_dir = create_project(
-                    tmp_path,
-                    copy_source=True,
-                    display_name=name,
-                    root_dir=clips_dir,
-                )
+                if project:
+                    # Add to existing project
+                    project_dir = os.path.join(clips_dir, project)
+                    if not os.path.isdir(project_dir):
+                        raise HTTPException(status_code=404, detail=f"Project '{project}' not found")
+                    from backend.project import add_clips_to_project
+
+                    add_clips_to_project(project_dir, [tmp_path], copy_source=True, folder_name=folder)
+                else:
+                    project_dir = create_project(
+                        tmp_path,
+                        copy_source=True,
+                        display_name=name,
+                        root_dir=clips_dir,
+                    )
             except HTTPException:
                 raise
             except Exception as e:

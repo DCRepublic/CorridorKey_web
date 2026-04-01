@@ -25,6 +25,14 @@ class ClipSchema(BaseModel):
     has_outputs: bool = False
     warnings: list[str] = []
     error_message: str | None = None
+    folder_name: str | None = None
+    project_name: str | None = None
+
+
+class FolderSchema(BaseModel):
+    name: str
+    display_name: str
+    clips: list[ClipSchema] = []
 
 
 class ClipListResponse(BaseModel):

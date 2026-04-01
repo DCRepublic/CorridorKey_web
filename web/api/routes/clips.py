@@ -47,6 +47,8 @@ def _clip_to_schema(clip) -> ClipSchema:
         has_outputs=clip.has_outputs,
         warnings=clip.warnings,
         error_message=clip.error_message,
+        folder_name=getattr(clip, "folder_name", None),
+        project_name=getattr(clip, "project_name", None),
     )
 
 
@@ -128,10 +130,11 @@ def delete_clip(name: str, request: Request):
 
 
 @router.post("/{name}/move")
-def move_clip(name: str, target_project: str, request: Request):
-    """Move a clip to a different project.
+def move_clip(name: str, target_project: str, request: Request, target_folder: str | None = None):
+    """Move a clip to a different project, optionally into a folder.
 
-    The clip directory is physically moved into the target project's clips/ dir.
+    The clip directory is physically moved into the target project's clips/ dir
+    (or folders/{target_folder}/ if specified).
     Updates project.json in both source and target projects.
     """
     from backend.project import is_v2_project, read_project_json, write_project_json

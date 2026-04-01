@@ -136,6 +136,8 @@ class ClipEntry:
     alpha_asset: ClipAsset | None = None
     mask_asset: ClipAsset | None = None  # User-provided VideoMaMa mask
     in_out_range: InOutRange | None = None  # Per-clip in/out markers (None = full clip)
+    folder_name: str | None = None  # folder within project (None = loose clip)
+    project_name: str | None = None  # project directory name
     warnings: list[str] = field(default_factory=list)
     error_message: str | None = None
     extraction_progress: float = 0.0  # 0.0 to 1.0 during EXTRACTING
@@ -390,20 +392,44 @@ def scan_project_clips(project_dir: str) -> list[ClipEntry]:
     from .project import is_v2_project
 
     if is_v2_project(project_dir):
+        project_name = os.path.basename(project_dir)
         clips_dir = os.path.join(project_dir, "clips")
         entries: list[ClipEntry] = []
+        # Scan loose clips in clips/
         for item in sorted(os.listdir(clips_dir)):
             item_path = os.path.join(clips_dir, item)
             if item.startswith(".") or item.startswith("_"):
                 continue
             if not os.path.isdir(item_path):
                 continue
-            clip = ClipEntry(name=item, root_path=item_path)
+            clip = ClipEntry(name=item, root_path=item_path, project_name=project_name)
             try:
                 clip.find_assets()
                 entries.append(clip)
             except ClipScanError as e:
                 logger.debug(str(e))
+        # Scan clips inside folders/
+        folders_dir = os.path.join(project_dir, "folders")
+        if os.path.isdir(folders_dir):
+            for folder_name in sorted(os.listdir(folders_dir)):
+                folder_path = os.path.join(folders_dir, folder_name)
+                if not os.path.isdir(folder_path) or folder_name.startswith("."):
+                    continue
+                for item in sorted(os.listdir(folder_path)):
+                    item_path = os.path.join(folder_path, item)
+                    if not os.path.isdir(item_path) or item.startswith("."):
+                        continue
+                    clip = ClipEntry(
+                        name=item,
+                        root_path=item_path,
+                        folder_name=folder_name,
+                        project_name=project_name,
+                    )
+                    try:
+                        clip.find_assets()
+                        entries.append(clip)
+                    except ClipScanError as e:
+                        logger.debug(str(e))
         logger.info(f"Scanned v2 project {project_dir}: {len(entries)} clip(s)")
         return entries
 

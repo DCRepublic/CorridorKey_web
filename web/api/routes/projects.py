@@ -28,13 +28,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depends(require_member)])
 
 
+class FolderSchema(BaseModel):
+    name: str
+    display_name: str
+    clips: list[dict] = []
+
+
 class ProjectSchema(BaseModel):
     name: str
     display_name: str
     path: str
     clip_count: int
     created: str | None = None
-    clips: list[dict] = []
+    clips: list[dict] = []  # loose clips (no folder)
+    folders: list[FolderSchema] = []
 
 
 class CreateProjectRequest(BaseModel):
@@ -71,6 +78,22 @@ def _scan_projects(root: str | None = None) -> list[ProjectSchema]:
         except Exception:
             clips = []
 
+        # Group clips: loose (no folder) vs foldered
+        loose = [c for c in clips if not c.folder_name]
+        folder_map: dict[str, list] = {}
+        for c in clips:
+            if c.folder_name:
+                folder_map.setdefault(c.folder_name, []).append(c)
+
+        folders = [
+            FolderSchema(
+                name=fn,
+                display_name=fn.replace("_", " "),
+                clips=[_clip_to_schema(c).__dict__ for c in fc],
+            )
+            for fn, fc in sorted(folder_map.items())
+        ]
+
         projects.append(
             ProjectSchema(
                 name=item,
@@ -78,7 +101,8 @@ def _scan_projects(root: str | None = None) -> list[ProjectSchema]:
                 path=item_path,
                 clip_count=len(clips),
                 created=created,
-                clips=[_clip_to_schema(c).__dict__ for c in clips],
+                clips=[_clip_to_schema(c).__dict__ for c in loose],
+                folders=folders,
             )
         )
 
@@ -159,3 +183,45 @@ def delete_project(name: str, request: Request):
         raise HTTPException(status_code=500, detail="Failed to delete") from e
 
     return {"status": "deleted", "name": name}
+
+
+# --- Folders ---
+
+
+class CreateFolderRequest(BaseModel):
+    name: str
+
+
+@router.post("/{project_name}/folders")
+def create_folder_endpoint(project_name: str, req: CreateFolderRequest, request: Request):
+    """Create a folder inside a project."""
+    from backend.project import create_folder
+
+    root = resolve_clips_dir(request)
+    project_dir = os.path.join(root, project_name)
+    if not os.path.isdir(project_dir):
+        raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
+    folder_path = create_folder(project_dir, req.name.strip())
+    folder_name = os.path.basename(folder_path)
+    return {"name": folder_name, "display_name": folder_name.replace("_", " "), "clips": []}
+
+
+@router.delete("/{project_name}/folders/{folder_name}")
+def delete_folder(project_name: str, folder_name: str, request: Request):
+    """Delete a folder. Clips inside are moved to loose clips/."""
+    from backend.project import move_clip_to_folder
+
+    root = resolve_clips_dir(request)
+    project_dir = os.path.join(root, project_name)
+    folder_path = os.path.join(project_dir, "folders", folder_name)
+    if not os.path.isdir(folder_path):
+        raise HTTPException(status_code=404, detail=f"Folder '{folder_name}' not found")
+    # Move all clips inside to loose clips/ first
+    for item in os.listdir(folder_path):
+        item_path = os.path.join(folder_path, item)
+        if os.path.isdir(item_path) and not item.startswith("."):
+            move_clip_to_folder(project_dir, item, None)
+    # Remove the now-empty folder
+    if os.path.isdir(folder_path):
+        shutil.rmtree(folder_path)
+    return {"status": "deleted"}

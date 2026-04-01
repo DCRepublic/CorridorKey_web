@@ -131,6 +131,8 @@ export interface Clip {
 	has_outputs: boolean;
 	warnings: string[];
 	error_message: string | null;
+	folder_name: string | null;
+	project_name: string | null;
 }
 
 export interface ClipListResponse {
@@ -194,13 +196,20 @@ export interface VRAMInfo {
 	available: boolean;
 }
 
+export interface Folder {
+	name: string;
+	display_name: string;
+	clips: Clip[];
+}
+
 export interface Project {
 	name: string;
 	display_name: string;
 	path: string;
 	clip_count: number;
 	created: string | null;
-	clips: Clip[];
+	clips: Clip[];       // loose clips (no folder)
+	folders: Folder[];   // named sub-groupings
 }
 
 export interface DeviceInfo {
@@ -223,14 +232,21 @@ export const api = {
 		create: (name: string) => request<Project>('POST', '/api/projects', { name }),
 		rename: (name: string, display_name: string) =>
 			request<unknown>('PATCH', `/api/projects/${encodeURIComponent(name)}`, { display_name }),
-		delete: (name: string) => request<unknown>('DELETE', `/api/projects/${encodeURIComponent(name)}`)
+		delete: (name: string) => request<unknown>('DELETE', `/api/projects/${encodeURIComponent(name)}`),
+		createFolder: (projectName: string, folderName: string) =>
+			request<Folder>('POST', `/api/projects/${encodeURIComponent(projectName)}/folders`, { name: folderName }),
+		deleteFolder: (projectName: string, folderName: string) =>
+			request<unknown>('DELETE', `/api/projects/${encodeURIComponent(projectName)}/folders/${encodeURIComponent(folderName)}`),
 	},
 	clips: {
 		list: () => request<ClipListResponse>('GET', '/api/clips'),
 		get: (name: string) => request<Clip>('GET', `/api/clips/${encodeURIComponent(name)}`),
 		delete: (name: string) => request<unknown>('DELETE', `/api/clips/${encodeURIComponent(name)}`),
-		move: (name: string, targetProject: string) =>
-			request<unknown>('POST', `/api/clips/${encodeURIComponent(name)}/move?target_project=${encodeURIComponent(targetProject)}`)
+		move: (name: string, targetProject: string, targetFolder?: string) => {
+			const qs = new URLSearchParams({ target_project: targetProject });
+			if (targetFolder) qs.set('target_folder', targetFolder);
+			return request<unknown>('POST', `/api/clips/${encodeURIComponent(name)}/move?${qs}`);
+		}
 	},
 	jobs: {
 		list: () => request<JobListResponse>('GET', '/api/jobs'),
@@ -303,11 +319,13 @@ export const api = {
 		downloadWeights: (name: string) => request<unknown>('POST', `/api/system/weights/download/${name}`)
 	},
 	upload: {
-		video: async (file: File, name?: string, autoExtract = true, onProgress?: UploadProgressFn): Promise<{ status: string; clips: Clip[]; extract_jobs: string[] }> => {
+		video: async (file: File, name?: string, autoExtract = true, onProgress?: UploadProgressFn, project?: string, folder?: string): Promise<{ status: string; clips: Clip[]; extract_jobs: string[] }> => {
 			const form = new FormData();
 			form.append('file', file);
 			const qs = new URLSearchParams();
 			if (name) qs.set('name', name);
+			if (project) qs.set('project', project);
+			if (folder) qs.set('folder', folder);
 			qs.set('auto_extract', String(autoExtract));
 			return uploadRequest(`/api/upload/video?${qs}`, form, onProgress);
 		},

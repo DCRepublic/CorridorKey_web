@@ -35,6 +35,9 @@
 	let uploadProjectName = $state('');
 	let uploadProjectMode = $state<'new' | 'existing'>('new');
 	let uploadSelectedProject = $state('');
+	let uploadFolderMode = $state<'none' | 'existing' | 'new'>('none');
+	let uploadSelectedFolder = $state('');
+	let uploadNewFolderName = $state('');
 	let uploadStatus = $state<'choose' | 'uploading' | 'extracting' | 'done'>('choose');
 	let uploadFileProgress = $state<{ name: string; progress: number; done: boolean }[]>([]);
 
@@ -253,17 +256,24 @@
 
 	const STATES = ['RAW', 'READY', 'COMPLETE', 'ERROR', 'EXTRACTING', 'MASKED'];
 
+	function _matchClip(c: Clip, q: string, projectName: string): boolean {
+		if (stateFilter !== 'all' && c.state !== stateFilter) return false;
+		if (q && !c.name.toLowerCase().includes(q) && !projectName.toLowerCase().includes(q)) return false;
+		return true;
+	}
+
 	let filteredProjects = $derived.by(() => {
 		if (!searchQuery && stateFilter === 'all') return projects;
 		const q = searchQuery.toLowerCase();
 		return projects.map(p => {
-			const filteredClips = p.clips.filter(c => {
-				if (stateFilter !== 'all' && c.state !== stateFilter) return false;
-				if (q && !c.name.toLowerCase().includes(q) && !p.display_name.toLowerCase().includes(q)) return false;
-				return true;
-			});
-			return { ...p, clips: filteredClips, clip_count: filteredClips.length };
-		}).filter(p => p.clips.length > 0 || (!q && stateFilter === 'all'));
+			const filteredClips = p.clips.filter(c => _matchClip(c, q, p.display_name));
+			const filteredFolders = (p.folders || []).map(f => ({
+				...f,
+				clips: f.clips.filter(c => _matchClip(c, q, p.display_name)),
+			})).filter(f => f.clips.length > 0);
+			const totalClips = filteredClips.length + filteredFolders.reduce((s, f) => s + f.clips.length, 0);
+			return { ...p, clips: filteredClips, folders: filteredFolders, clip_count: totalClips };
+		}).filter(p => p.clip_count > 0 || (!q && stateFilter === 'all'));
 	});
 
 	const VIDEO_EXTS = ['.mp4', '.mov', '.avi', '.mkv', '.mxf', '.webm', '.m4v'];
@@ -299,10 +309,26 @@
 	}
 
 	async function startUpload() {
-		const projectName = uploadProjectMode === 'existing'
-			? (projects.find(p => p.name === uploadSelectedProject)?.display_name || uploadSelectedProject)
+		let targetProject: string | undefined;
+		let targetFolder: string | undefined;
+		const displayName = uploadProjectMode === 'existing'
+			? (projects.find(p => p.name === uploadSelectedProject)?.display_name || '')
 			: uploadProjectName.trim();
-		const existingProject = uploadProjectMode === 'existing' ? uploadSelectedProject : null;
+
+		if (uploadProjectMode === 'existing') {
+			targetProject = uploadSelectedProject;
+			if (uploadFolderMode === 'existing' && uploadSelectedFolder) {
+				targetFolder = uploadSelectedFolder;
+			} else if (uploadFolderMode === 'new' && uploadNewFolderName.trim()) {
+				// Create folder first
+				try {
+					const f = await api.projects.createFolder(uploadSelectedProject, uploadNewFolderName.trim());
+					targetFolder = f.name;
+				} catch { /* will upload to loose clips */ }
+			}
+		}
+		// For new projects: don't set targetProject — let the first upload create it
+		// Subsequent files will use the created project name
 		uploadStatus = 'uploading';
 		uploading = true;
 		uploadError = null;
@@ -323,9 +349,7 @@
 				}
 			}
 
-			// Upload first file with project name (creates the project), then
-			// move subsequent clips into that same project to avoid duplicates.
-			let targetProjectName: string | null = existingProject;
+			// Upload files — pass project/folder to API so clips go into the right place
 			for (let fi = 0; fi < otherFiles.length; fi++) {
 				const file = otherFiles[fi];
 				const idx = pendingFiles.indexOf(file);
@@ -333,11 +357,10 @@
 				const onProgress = (loaded: number, total: number) => {
 					if (idx >= 0) uploadFileProgress[idx] = { ...uploadFileProgress[idx], progress: Math.round((loaded / total) * 100) };
 				};
-				// First file creates the project; subsequent files upload without a name
-				// then get moved into the first file's project
-				const uploadName = fi === 0 ? (projectName || undefined) : undefined;
+				// First file may create the project; subsequent files use the created project
+				const uploadName = !targetProject && fi === 0 ? (displayName || undefined) : undefined;
 				if (isVideo(file.name)) {
-					result = await api.upload.video(file, uploadName, $autoExtractFrames, onProgress);
+					result = await api.upload.video(file, uploadName, $autoExtractFrames, onProgress, targetProject, targetFolder);
 				} else if (isZip(file.name)) {
 					result = await api.upload.frames(file, uploadName, onProgress);
 				} else { continue; }
@@ -345,15 +368,15 @@
 					for (const c of result.clips) {
 						if (c.name) lastUploadedClips.push(c.name);
 						// After first upload in "new" mode, find the project it created
-						if (fi === 0 && !targetProjectName) {
+						// so subsequent files go into the same project
+						if (fi === 0 && !targetProject) {
 							const refreshed = await api.projects.list();
-							const match = refreshed.find(p => p.clips.some(cl => cl.name === c.name));
-							if (match) targetProjectName = match.name;
-						}
-						// Move clips into the target project (all for existing, fi>0 for new)
-						const shouldMove = existingProject ? true : fi > 0;
-						if (shouldMove && targetProjectName && c.name) {
-							try { await api.clips.move(c.name, targetProjectName); } catch { /* best effort */ }
+							const allClips = refreshed.flatMap(p => [...p.clips, ...p.folders.flatMap(f => f.clips)]);
+							const match = refreshed.find(p =>
+								p.clips.some(cl => cl.name === c.name) ||
+								p.folders.some(f => f.clips.some(cl => cl.name === c.name))
+							);
+							if (match) targetProject = match.name;
 						}
 					}
 				}
@@ -601,9 +624,48 @@
 								}
 							}}
 						>
-							{#if project.clips.length === 0}
+							<!-- Folders inside project -->
+							{#if project.folders?.length > 0}
+								{#each project.folders as folder (folder.name)}
+									{@const folderKey = `${project.name}:${folder.name}`}
+									{@const folderCollapsed = collapsedProjects.has(folderKey)}
+									<div class="folder-group">
+										<div class="folder-header" role="button" tabindex="0" onclick={() => toggleProject(folderKey)}>
+											<svg class="chevron" class:collapsed={folderCollapsed} width="10" height="10" viewBox="0 0 12 12" fill="none">
+												<path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+											</svg>
+											<svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="color: var(--secondary)">
+												<path d="M2 4h5l2 2h5v7H2V4z" stroke="currentColor" stroke-width="1.2" fill="none"/>
+											</svg>
+											<span class="folder-name">{folder.display_name}</span>
+											<span class="folder-count mono">{folder.clips.length}</span>
+										</div>
+										{#if !folderCollapsed}
+											<div class="clip-grid folder-clips">
+												{#each folder.clips as clip (clip.name)}
+													<div class="clip-wrap"
+														class:selected={selectedClips.has(clip.name)}
+														draggable="true"
+														ondragstart={(e) => { e.dataTransfer?.setData('text/clip-name', clip.name); draggingClip = true; }}
+														ondragend={() => { draggingClip = false; dropTargetProject = null; }}
+														oncontextmenu={(e) => hasSelection ? showSelectionContext(e) : showClipContext(e, clip, project)}
+													>
+														<label class="clip-checkbox">
+															<input type="checkbox" checked={selectedClips.has(clip.name)} onchange={() => toggleSelect(clip.name)} onclick={(e) => e.stopPropagation()} />
+														</label>
+														<ClipCard {clip} />
+													</div>
+												{/each}
+											</div>
+										{/if}
+									</div>
+								{/each}
+							{/if}
+							<!-- Loose clips (no folder) -->
+							{#if project.clips.length === 0 && (!project.folders || project.folders.length === 0)}
 								<p class="no-clips mono">Drop clips here or upload new ones</p>
-							{:else}
+							{/if}
+							{#if project.clips.length > 0}
 								<div class="clip-grid">
 									{#each project.clips as clip (clip.name)}
 										<div class="clip-wrap"
@@ -686,6 +748,27 @@
 						</label>
 					{/if}
 				</div>
+				{#if uploadProjectMode === 'existing' && uploadSelectedProject}
+					<div class="folder-choice">
+						<span class="field-label mono">FOLDER (optional)</span>
+						<div class="choice-tabs">
+							<button class="choice-tab mono" class:active={uploadFolderMode === 'none'} onclick={() => uploadFolderMode = 'none'}>None</button>
+							{#if projects.find(p => p.name === uploadSelectedProject)?.folders?.length}
+								<button class="choice-tab mono" class:active={uploadFolderMode === 'existing'} onclick={() => { uploadFolderMode = 'existing'; const f = projects.find(p => p.name === uploadSelectedProject)?.folders?.[0]; if (f) uploadSelectedFolder = f.name; }}>Existing</button>
+							{/if}
+							<button class="choice-tab mono" class:active={uploadFolderMode === 'new'} onclick={() => uploadFolderMode = 'new'}>New</button>
+						</div>
+						{#if uploadFolderMode === 'existing'}
+							<select class="modal-select mono" bind:value={uploadSelectedFolder}>
+								{#each projects.find(p => p.name === uploadSelectedProject)?.folders ?? [] as f}
+									<option value={f.name}>{f.display_name} ({f.clips.length})</option>
+								{/each}
+							</select>
+						{:else if uploadFolderMode === 'new'}
+							<input type="text" class="modal-input mono" bind:value={uploadNewFolderName} placeholder="e.g. Scene 1" />
+						{/if}
+					</div>
+				{/if}
 				<div class="modal-files mono">
 					{#each pendingFiles as f}
 						<span class="file-name">{f.name}</span>
@@ -760,6 +843,7 @@
 	.modal-input:focus { border-color: var(--accent); }
 	.modal-input::placeholder { color: var(--text-tertiary); }
 	.project-choice { display: flex; flex-direction: column; gap: var(--sp-2); }
+	.folder-choice { display: flex; flex-direction: column; gap: var(--sp-2); }
 	.choice-tabs { display: flex; gap: 0; }
 	.choice-tab {
 		flex: 1; padding: 6px; font-size: 11px; letter-spacing: 0.04em; text-align: center;
@@ -1093,6 +1177,21 @@
 		color: var(--state-error);
 		background: rgba(255, 82, 82, 0.1);
 	}
+
+	/* Folders inside projects */
+	.folder-group {
+		border-top: 1px solid var(--border-subtle);
+	}
+	.folder-header {
+		display: flex; align-items: center; gap: var(--sp-2);
+		padding: var(--sp-2) var(--sp-4) var(--sp-2) var(--sp-6);
+		cursor: pointer; transition: background 0.15s;
+		font-size: 13px;
+	}
+	.folder-header:hover { background: var(--surface-3); }
+	.folder-name { font-weight: 500; color: var(--text-secondary); }
+	.folder-count { font-size: 10px; color: var(--text-tertiary); }
+	.folder-clips { padding-left: var(--sp-4); }
 
 	.project-clips {
 		padding: var(--sp-3) var(--sp-4) var(--sp-4);
