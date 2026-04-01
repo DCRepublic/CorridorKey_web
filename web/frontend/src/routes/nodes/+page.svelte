@@ -61,6 +61,7 @@
 
 	function statusClass(n: NodeInfo): string {
 		if (!isAlive(n)) return 'offline';
+		if (n.version_ok === false) return 'outdated';
 		if (n.status === 'busy') return 'busy';
 		if (n.paused) return 'paused';
 		return 'online';
@@ -68,6 +69,7 @@
 
 	function statusLabel(n: NodeInfo): string {
 		if (!isAlive(n)) return 'Offline';
+		if (n.version_ok === false) return 'Outdated';
 		if (n.status === 'busy') return 'Busy';
 		if (n.paused) return 'Paused';
 		return 'Online';
@@ -296,9 +298,9 @@
 								<div class="info-row">
 								<span class="info-label">Visibility</span>
 								{#if node.can_manage}
-									<button class="btn-sm mono" onclick={() => toggleVisibility(node)}>{node.visibility === 'shared' ? 'SHARED → PRIVATE' : 'PRIVATE → SHARED'}</button>
+									<button class="visibility-toggle mono" class:shared={node.visibility === 'shared'} onclick={() => toggleVisibility(node)}>{node.visibility === 'shared' ? 'SHARED' : 'PRIVATE'}</button>
 								{:else}
-									<span class="mono">{node.visibility}</span>
+									<span class="visibility-badge mono" class:shared={node.visibility === 'shared'}>{node.visibility === 'shared' ? 'SHARED' : 'PRIVATE'}</span>
 								{/if}
 							</div>
 								<div class="info-row"><span class="info-label">Version</span><span class="mono">{node.agent_version?.substring(0, 8) || '—'}</span></div>
@@ -447,12 +449,14 @@
 	.status-dot.busy { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 	.status-dot.paused { background: var(--state-queued); }
 	.status-dot.offline { background: var(--text-tertiary); }
+	.status-dot.outdated { background: var(--state-error); }
 	.node-name { font-size: 14px; font-weight: 600; color: var(--text-primary); flex: 1; }
 	.status-label { font-size: 9px; letter-spacing: 0.06em; }
 	.status-label.online { color: var(--state-complete); }
 	.status-label.busy { color: var(--accent); }
 	.status-label.paused { color: var(--state-queued); }
 	.status-label.offline { color: var(--text-tertiary); }
+	.status-label.outdated { color: var(--state-error); }
 
 	.gpu-row { display: flex; align-items: center; gap: var(--sp-2); }
 	.gpu-name { font-size: 11px; color: var(--text-secondary); flex: 1; }
@@ -471,6 +475,14 @@
 	.tag-paused { font-size: 8px; padding: 1px 5px; border-radius: 3px; background: rgba(144, 164, 174, 0.15); color: var(--state-queued); letter-spacing: 0.06em; }
 	.tag-sched { font-size: 8px; padding: 1px 5px; border-radius: 3px; background: rgba(0, 154, 218, 0.1); color: var(--secondary); }
 	.tag-compiled { font-size: 8px; padding: 1px 5px; border-radius: 3px; background: rgba(93, 216, 121, 0.1); color: var(--state-complete); letter-spacing: 0.06em; }
+
+	.visibility-toggle, .visibility-badge {
+		font-size: 10px; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 3px;
+		background: var(--surface-4); color: var(--text-tertiary); border: 1px solid var(--border);
+	}
+	.visibility-toggle { cursor: pointer; transition: all 0.15s; }
+	.visibility-toggle:hover { border-color: var(--text-tertiary); }
+	.visibility-toggle.shared, .visibility-badge.shared { background: rgba(0, 154, 218, 0.12); color: var(--secondary); border-color: rgba(0, 154, 218, 0.3); }
 
 	/* Card expand */
 	.card-expand {

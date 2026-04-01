@@ -120,12 +120,23 @@ def probe_video(path: str) -> dict:
     if frame_count <= 0:
         try:
             count_cmd = [
-                ffprobe, "-v", "quiet", "-select_streams", "v:0",
-                "-count_packets", "-show_entries", "stream=nb_read_packets",
-                "-print_format", "csv=p=0", path,
+                ffprobe,
+                "-v",
+                "quiet",
+                "-select_streams",
+                "v:0",
+                "-count_packets",
+                "-show_entries",
+                "stream=nb_read_packets",
+                "-print_format",
+                "csv=p=0",
+                path,
             ]
             count_result = subprocess.run(
-                count_cmd, capture_output=True, text=True, timeout=30,
+                count_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             if count_result.returncode == 0 and count_result.stdout.strip():
