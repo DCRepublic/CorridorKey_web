@@ -322,6 +322,36 @@ def delete_org_webhook(org_id: str, hook_id: str, request: Request):
     return {"status": "deleted"}
 
 
+@router.post("/{org_id}/webhooks/{hook_id}/test", dependencies=[Depends(require_authenticated)])
+def test_org_webhook(org_id: str, hook_id: str, request: Request):
+    """Send a test event to a webhook. Org admin only."""
+    user = _get_user(request)
+    store = get_org_store()
+    if not user.is_admin and not store.is_org_admin(org_id, user.user_id):
+        raise HTTPException(status_code=403, detail="Only org admins can test webhooks")
+    from ..webhooks import list_webhooks
+
+    hook = next((h for h in list_webhooks(org_id) if h.id == hook_id), None)
+    if not hook:
+        raise HTTPException(status_code=404, detail="Webhook not found in this org")
+
+    # Fire a test event
+    from ..webhooks import _deliver
+
+    test_data = {
+        "job_id": "test-0000",
+        "clip_name": "test_clip",
+        "job_type": "inference",
+        "frames": 100,
+        "test": True,
+    }
+    try:
+        _deliver(hook, "test", test_data)
+        return {"status": "sent"}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Delivery failed: {e}") from e
+
+
 # --- Org preferences ---
 
 

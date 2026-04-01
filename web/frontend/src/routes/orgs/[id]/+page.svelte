@@ -105,6 +105,21 @@
 		await loadAll();
 	}
 
+	let testingWebhook = $state<string | null>(null);
+	let testResult = $state<string | null>(null);
+
+	async function testWebhook(hookId: string) {
+		testingWebhook = hookId; testResult = null;
+		try {
+			await authFetch(`/api/orgs/${orgId}/webhooks/${hookId}/test`, { method: 'POST' });
+			testResult = 'sent';
+			setTimeout(() => { testResult = null; }, 3000);
+		} catch (e) {
+			testResult = 'failed';
+			setTimeout(() => { testResult = null; }, 3000);
+		} finally { testingWebhook = null; }
+	}
+
 	function toggleWebhookEvent(event: string) {
 		const next = new Set(newWebhookEvents);
 		if (next.has(event)) next.delete(event); else next.add(event);
@@ -217,6 +232,8 @@
 							<div class="webhook-row">
 								<span class="webhook-url mono">{hook.url}</span>
 								<span class="webhook-events mono">{hook.events.join(', ')}</span>
+								<span class="webhook-format mono">{hook.format ?? 'json'}</span>
+								<button class="btn-test mono" onclick={() => testWebhook(hook.id)} title="Send test event">TEST</button>
 								<button class="btn-icon" onclick={() => deleteWebhook(hook.id)} title="Delete">
 									<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5"/></svg>
 								</button>
@@ -364,7 +381,14 @@
 
 	.webhook-list { display: flex; flex-direction: column; gap: var(--sp-2); }
 	.webhook-row { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-1) 0; }
-	.webhook-url { font-size: 12px; color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; }
+	.webhook-url { font-size: 12px; color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+	.webhook-format { font-size: 9px; padding: 1px 5px; border-radius: 3px; background: var(--surface-4); color: var(--text-tertiary); }
+	.btn-test {
+		font-size: 9px; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 3px;
+		background: rgba(0, 154, 218, 0.1); border: 1px solid rgba(0, 154, 218, 0.3); color: var(--secondary);
+		cursor: pointer; transition: all 0.15s;
+	}
+	.btn-test:hover { background: rgba(0, 154, 218, 0.2); }
 	.webhook-events { font-size: 10px; color: var(--text-tertiary); }
 	.webhook-form { display: flex; flex-direction: column; gap: var(--sp-2); border-top: 1px solid var(--border); padding-top: var(--sp-2); }
 	.webhook-options { display: flex; align-items: center; gap: var(--sp-3); }
