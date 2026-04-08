@@ -308,6 +308,23 @@ def _chain_next_pipeline_step(job: GPUJob, queue: JobState, clips_dir: str, serv
     frame_count = clip.input_asset.frame_count if clip.input_asset else 0
 
     if state == "RAW":
+        # Guard: if we just ran an alpha generation step and the clip is still RAW,
+        # the alpha output is incomplete (partial upload, frame mismatch, etc.).
+        # Do NOT re-submit the same step — that would loop forever.
+        if job.job_type in (JobType.GVM_ALPHA, JobType.VIDEOMAMA_ALPHA):
+            alpha_count = clip.alpha_asset.frame_count if clip.alpha_asset else 0
+            logger.warning(
+                f"Pipeline chain: clip '{job.clip_name}' still RAW after {job.job_type.value} "
+                f"(alpha={alpha_count}/{frame_count}). Stopping pipeline to prevent loop."
+            )
+            manager.send_job_warning(
+                job.id,
+                f"Pipeline stopped: alpha generation produced {alpha_count}/{frame_count} frames. "
+                f"Check node connectivity and retry.",
+                org_id=job.org_id,
+            )
+            return
+
         # Extraction done → need alpha generation
         alpha_method = params.get("alpha_method", "gvm")
         if alpha_method == "videomama":
