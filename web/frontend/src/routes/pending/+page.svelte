@@ -135,6 +135,12 @@
 			</div>
 		{/if}
 
+		<div class="support-cta">
+			<a href="https://buymeacoffee.com/dcrepublic" target="_blank" rel="noopener" class="support-link">
+				Support CorridorKey's server costs
+			</a>
+		</div>
+
 		<div class="auth-footer">
 			<a href="/login">Back to sign in</a>
 		</div>
@@ -224,6 +230,16 @@
 		from { transform: rotate(0deg); }
 		to { transform: rotate(360deg); }
 	}
+
+	.support-cta {
+		font-size: 12px;
+		color: var(--text-tertiary);
+	}
+	.support-link {
+		color: var(--text-secondary);
+		transition: color 0.15s;
+	}
+	.support-link:hover { color: var(--accent); }
 
 	.auth-footer { font-size: 13px; }
 	.auth-footer a { color: var(--accent); }

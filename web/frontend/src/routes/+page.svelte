@@ -112,6 +112,7 @@
 			<a href="/privacy">Privacy</a>
 			<a href="https://github.com/JamesNyeVRGuy/CorridorKey" target="_blank" rel="noopener">GitHub</a>
 			<a href="https://discord.gg/44tHTSCGVQ" target="_blank" rel="noopener">Discord</a>
+			<a href="https://buymeacoffee.com/dcrepublic" target="_blank" rel="noopener">Support</a>
 			<a href="/status">Status</a>
 		</div>
 		<span class="footer-copy mono">CorridorKey — Corridor Digital</span>

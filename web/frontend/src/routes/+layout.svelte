@@ -306,10 +306,16 @@
 					<span class="conn-badge mono" class:live={connected}>{connected ? 'CONNECTED' : 'OFFLINE'}</span>
 				</div>
 			{/if}
-			<a href="https://discord.gg/44tHTSCGVQ" target="_blank" rel="noopener" class="discord-link mono">
-				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13.5 3.2A12.3 12.3 0 0 0 10.3 2a8 8 0 0 0-.4.8 11.5 11.5 0 0 0-3.8 0A8 8 0 0 0 5.7 2 12.3 12.3 0 0 0 2.5 3.2 13.7 13.7 0 0 0 .1 12.5a12.4 12.4 0 0 0 3.8 2 9 9 0 0 0 .8-1.3 8 8 0 0 1-1.3-.6l.3-.2a8.8 8.8 0 0 0 7.6 0l.3.2a8 8 0 0 1-1.3.6 9 9 0 0 0 .8 1.3 12.4 12.4 0 0 0 3.8-2A13.7 13.7 0 0 0 13.5 3.2ZM5.3 10.7c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.7 1.7-1.5 1.7Zm5.4 0c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.7 1.7-1.5 1.7Z"/></svg>
-				Discord
-			</a>
+			<div class="external-links">
+				<a href="https://discord.gg/44tHTSCGVQ" target="_blank" rel="noopener" class="external-link mono">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13.5 3.2A12.3 12.3 0 0 0 10.3 2a8 8 0 0 0-.4.8 11.5 11.5 0 0 0-3.8 0A8 8 0 0 0 5.7 2 12.3 12.3 0 0 0 2.5 3.2 13.7 13.7 0 0 0 .1 12.5a12.4 12.4 0 0 0 3.8 2 9 9 0 0 0 .8-1.3 8 8 0 0 1-1.3-.6l.3-.2a8.8 8.8 0 0 0 7.6 0l.3.2a8 8 0 0 1-1.3.6 9 9 0 0 0 .8 1.3 12.4 12.4 0 0 0 3.8-2A13.7 13.7 0 0 0 13.5 3.2ZM5.3 10.7c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.7 1.7-1.5 1.7Zm5.4 0c-.8 0-1.5-.8-1.5-1.7s.7-1.7 1.5-1.7 1.5.8 1.5 1.7-.7 1.7-1.5 1.7Z"/></svg>
+					Discord
+				</a>
+				<a href="https://buymeacoffee.com/dcrepublic" target="_blank" rel="noopener" class="external-link support-link mono">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h7A1.5 1.5 0 0 1 12 4.5v.5h.5A1.5 1.5 0 0 1 14 6.5v1A1.5 1.5 0 0 1 12.5 9H12v.5A1.5 1.5 0 0 1 10.5 11h-7A1.5 1.5 0 0 1 2 9.5v-5Zm10 1v3h.5a.5.5 0 0 0 .5-.5v-1a.5.5 0 0 0-.5-.5H12ZM3 12.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 0 1h-7a.5.5 0 0 1-.5-.5Z"/></svg>
+					Support
+				</a>
+			</div>
 			{#if authEnabled}
 				{@const user = getStoredUser()}
 				<div class="user-row">
@@ -699,7 +705,11 @@
 	}
 	.banner-text { letter-spacing: 0.02em; }
 
-	.discord-link {
+	.external-links {
+		display: flex;
+		gap: var(--sp-2);
+	}
+	.external-link {
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -711,8 +721,11 @@
 		border-radius: var(--radius-sm);
 		transition: all 0.15s;
 		text-decoration: none;
+		flex: 1;
+		justify-content: center;
 	}
-	.discord-link:hover { color: #5865F2; border-color: #5865F2; }
+	.external-link:hover { color: #5865F2; border-color: #5865F2; }
+	.external-link.support-link:hover { color: var(--accent); border-color: var(--accent); }
 
 	.user-row {
 		display: flex;
