@@ -2,24 +2,39 @@
 
 from __future__ import annotations
 
+import errno
 import glob
 import logging
 import os
 import platform
+import shutil
 import sys
+import urllib.request
 from pathlib import Path
 
 import numpy as np
+import torch
 
 logger = logging.getLogger(__name__)
 
-CHECKPOINT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
+_custom_weights = os.environ.get("CK_WEIGHTS_DIR", "").strip()
+if _custom_weights:
+    CHECKPOINT_DIR = os.path.join(_custom_weights, "CorridorKeyModule", "checkpoints")
+elif getattr(sys, "frozen", False):
+    # Frozen build: weights next to the executable
+    CHECKPOINT_DIR = os.path.join(os.path.dirname(sys.executable), "CorridorKeyModule", "checkpoints")
+else:
+    CHECKPOINT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
 TORCH_EXT = ".pth"
 MLX_EXT = ".safetensors"
 DEFAULT_IMG_SIZE = 2048
 
 BACKEND_ENV_VAR = "CORRIDORKEY_BACKEND"
 VALID_BACKENDS = ("auto", "torch", "mlx")
+
+# Update HF_REPO_ID and HF_CHECKPOINT_FILENAME if a new model version is released.
+HF_REPO_ID = "nikopueringer/CorridorKey_v1.0"
+HF_CHECKPOINT_FILENAME = "CorridorKey_v1.0.pth"
 
 
 def resolve_backend(requested: str | None = None) -> str:
@@ -47,6 +62,12 @@ def resolve_backend(requested: str | None = None) -> str:
     return backend
 
 
+if not getattr(sys, "frozen", False) and not _custom_weights:
+    CHECKPOINT_DIR = os.path.join("CorridorKeyModule", "checkpoints")
+MLX_MODEL_URL = "https://github.com/nikopueringer/corridorkey-mlx/releases/download/v1.0.0/corridorkey_mlx.safetensors"
+MLX_MODEL_FILENAME = "corridorkey_mlx.safetensors"
+
+
 def _auto_detect_backend() -> str:
     """Try MLX on Apple Silicon, fall back to Torch."""
     if sys.platform != "darwin" or platform.machine() != "arm64":
@@ -59,10 +80,33 @@ def _auto_detect_backend() -> str:
         logger.info("corridorkey_mlx not installed — using torch backend")
         return "torch"
 
-    safetensor_files = glob.glob(os.path.join(CHECKPOINT_DIR, f"*{MLX_EXT}"))
-    if not safetensor_files:
-        logger.info("No %s checkpoint found — using torch backend", MLX_EXT)
-        return "torch"
+        # Auto-download logic for the .safetensors file
+    model_path = os.path.join(CHECKPOINT_DIR, MLX_MODEL_FILENAME)
+    cache_path = model_path + ".tmp"
+
+    if not os.path.exists(model_path):
+        logger.info(f"MLX checkpoint not found. Downloading to {model_path}...")
+        try:
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+
+            # Create CorridorKeyModule/checkpoints/ if it doesn't exist
+            os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+            # Download the file
+            urllib.request.urlretrieve(MLX_MODEL_URL, cache_path)
+            os.rename(cache_path, model_path)
+            logger.info("Download complete.")
+
+        except Exception as e:
+            logger.error(f"Failed to download MLX checkpoint: {e}")
+            logger.info("Falling back to torch backend due to download failure.")
+
+            # Clean up corrupted/partial file if the download failed midway
+            if os.path.exists(model_path):
+                os.remove(model_path)
+
+            return "torch"
 
     logger.info("Apple Silicon + MLX available — using mlx backend")
     return "mlx"
@@ -82,6 +126,49 @@ def _validate_mlx_available() -> None:
         ) from err
 
 
+def _ensure_torch_checkpoint() -> Path:
+    """Download the Torch checkpoint from HuggingFace if not present.
+
+    Returns the path to the downloaded checkpoint file.
+
+    Raises:
+        RuntimeError: Network or download failure.
+        OSError: Disk space or filesystem error.
+    """
+    dest = Path(CHECKPOINT_DIR) / HF_CHECKPOINT_FILENAME
+    hf_url = f"https://huggingface.co/{HF_REPO_ID}"
+
+    from huggingface_hub import hf_hub_download
+
+    logger.info("Downloading CorridorKey checkpoint from %s ...", hf_url)
+
+    try:
+        cached_path = hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename=HF_CHECKPOINT_FILENAME,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to download CorridorKey checkpoint from {hf_url}. "
+            "Check your network connection and try again. "
+            f"Original error: {exc}"
+        ) from exc
+
+    try:
+        shutil.copy2(cached_path, dest)
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            raise OSError(
+                errno.ENOSPC,
+                "Not enough disk space to save checkpoint (~300 MB required). "
+                f"Free up space in {CHECKPOINT_DIR} and try again.",
+            ) from exc
+        raise
+
+    logger.info("Checkpoint saved to %s", dest)
+    return dest
+
+
 def _discover_checkpoint(ext: str) -> Path:
     """Find exactly one checkpoint with the given extension.
 
@@ -91,6 +178,8 @@ def _discover_checkpoint(ext: str) -> Path:
     matches = glob.glob(os.path.join(CHECKPOINT_DIR, f"*{ext}"))
 
     if len(matches) == 0:
+        if ext == TORCH_EXT:
+            return _ensure_torch_checkpoint()
         other_ext = MLX_EXT if ext == TORCH_EXT else TORCH_EXT
         other_files = glob.glob(os.path.join(CHECKPOINT_DIR, f"*{other_ext}"))
         hint = ""
@@ -128,12 +217,12 @@ def _wrap_mlx_output(raw: dict, despill_strength: float, auto_despeckle: bool, d
 
     # Apply despeckle (MLX stubs this)
     if auto_despeckle:
-        processed_alpha = cu.clean_matte(alpha, area_threshold=despeckle_size, dilation=25, blur_size=5)
+        processed_alpha = cu.clean_matte_opencv(alpha, area_threshold=despeckle_size, dilation=25, blur_size=5)
     else:
         processed_alpha = alpha
 
     # Apply despill (MLX stubs this)
-    fg_despilled = cu.despill(fg, green_limit_mode="average", strength=despill_strength)
+    fg_despilled = cu.despill_opencv(fg, green_limit_mode="average", strength=despill_strength)
 
     # Composite over checkerboard for comp output
     h, w = fg.shape[:2]
@@ -172,6 +261,7 @@ class _MLXEngineAdapter:
         despill_strength=1.0,
         auto_despeckle=True,
         despeckle_size=400,
+        **_kwargs,
     ):
         """Delegate to MLX engine, then normalize output to Torch contract."""
         # MLX engine expects uint8 input — convert if float
@@ -236,4 +326,6 @@ def create_engine(
         from CorridorKeyModule.inference_engine import CorridorKeyEngine
 
         logger.info("Torch engine loaded: %s (device=%s)", ckpt.name, device)
-        return CorridorKeyEngine(checkpoint_path=str(ckpt), device=device or "cpu", img_size=img_size)
+        return CorridorKeyEngine(
+            checkpoint_path=str(ckpt), device=device or "cpu", img_size=img_size, model_precision=torch.float16
+        )

@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Corridor Key Launcher - Local Linux/macOS
 
-# Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-LOCAL_SCRIPT="$SCRIPT_DIR/corridorkey_cli.py"
+cd "$(dirname "$0")"
 
 # SAFETY CHECK: Ensure a folder was provided as an argument
 if [ -z "$1" ]; then
@@ -25,6 +23,11 @@ TARGET_PATH="$1"
 
 # Strip trailing slash if present
 TARGET_PATH="${TARGET_PATH%/}"
+
+# Install uv before running
+if ! command -v uv &> /dev/null; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
 
 echo "Starting Corridor Key locally..."
 echo "Target: $TARGET_PATH"

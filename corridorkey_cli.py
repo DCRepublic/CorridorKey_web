@@ -25,7 +25,15 @@ import typer
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TaskID, TextColumn, TimeElapsedColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 
@@ -34,14 +42,20 @@ from clip_manager import (
     ClipEntry,
     InferenceSettings,
     generate_alphas,
+    get_birefnet_usage_options,
     is_video_file,
     map_path,
     organize_target,
+    run_birefnet,
     run_inference,
     run_videomama,
     scan_clips,
 )
-from device_utils import resolve_device
+from CorridorKeyModule.backend import resolve_backend
+from device_utils import resolve_device, setup_rocm_env
+
+# ROCm env vars are read at operation time, so this is fine after imports.
+setup_rocm_env()
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -135,6 +149,8 @@ def _prompt_inference_settings(
     default_despeckle: bool | None = None,
     default_despeckle_size: int | None = None,
     default_refiner: float | None = None,
+    default_comp: bool | None = None,
+    default_gpu_post: bool | None = None,
 ) -> InferenceSettings:
     """Interactively prompt for inference settings, skipping any pre-filled values."""
     console.print(Panel("Inference Settings", style="bold cyan"))
@@ -187,12 +203,31 @@ def _prompt_inference_settings(
         except ValueError:
             refiner_scale = 1.0
 
+    if resolve_backend() == "torch":
+        if default_comp is not None:
+            generate_comp = default_comp
+        else:
+            generate_comp = Confirm.ask(
+                "Generate composition previews",
+                default=True,
+            )
+
+        if default_gpu_post is not None:
+            gpu_post_processing = default_gpu_post
+        else:
+            gpu_post_processing = Confirm.ask(
+                "Use GPU accelerated post-processing [dim](experimental)[/dim]",
+                default=False,
+            )
+
     return InferenceSettings(
         input_is_linear=input_is_linear,
         despill_strength=despill_strength,
         auto_despeckle=auto_despeckle,
         despeckle_size=despeckle_size,
         refiner_scale=refiner_scale,
+        generate_comp=generate_comp,
+        gpu_post_processing=gpu_post_processing,
     )
 
 
@@ -247,6 +282,10 @@ def run_inference_cmd(
         Optional[int],
         typer.Option("--max-frames", help="Limit frames per clip"),
     ] = None,
+    skip_existing: Annotated[
+        bool,
+        typer.Option("--skip-existing", help="Skip frames whose output files already exist (resume a partial render)"),
+    ] = False,
     linear: Annotated[
         Optional[bool],
         typer.Option("--linear/--srgb", help="Input colorspace (default: prompt)"),
@@ -266,6 +305,14 @@ def run_inference_cmd(
     refiner: Annotated[
         Optional[float],
         typer.Option("--refiner", help="Refiner strength multiplier (default: prompt)"),
+    ] = None,
+    generate_comp: Annotated[
+        Optional[bool],
+        typer.Option("--comp/--no-comp", help="Generate comp previews (default: prompt)"),
+    ] = None,
+    gpu_post: Annotated[
+        Optional[bool],
+        typer.Option("--gpu-post/--cpu-post", help="Use GPU post-processing (default: prompt)"),
     ] = None,
 ) -> None:
     """Run CorridorKey inference on clips with Input + AlphaHint.
@@ -294,6 +341,8 @@ def run_inference_cmd(
             default_despeckle=despeckle,
             default_despeckle_size=despeckle_size,
             default_refiner=refiner,
+            default_comp=generate_comp,
+            default_gpu_post=gpu_post,
         )
 
     with ProgressContext() as ctx_progress:
@@ -302,6 +351,7 @@ def run_inference_cmd(
             device=ctx.obj["device"],
             backend=backend,
             max_frames=max_frames,
+            skip_existing=skip_existing,
             settings=settings,
             on_clip_start=ctx_progress.on_clip_start,
             on_frame_complete=ctx_progress.on_frame_complete,
@@ -486,6 +536,7 @@ def interactive_wizard(win_path: str, device: str | None = None) -> None:
         if missing_alpha:
             actions.append(f"[bold]v[/bold] — Run VideoMaMa ({len(masked)} with masks)")
             actions.append(f"[bold]g[/bold] — Run GVM (auto-matte {len(raw)} clips)")
+            actions.append(f"[bold]b[/bold] — Run BiRefNet (auto-matte {len(raw)} clips)")
         if ready:
             actions.append(f"[bold]i[/bold] — Run Inference ({len(ready)} ready clips)")
         actions.append("[bold]r[/bold] — Re-scan folders")
@@ -493,7 +544,7 @@ def interactive_wizard(win_path: str, device: str | None = None) -> None:
 
         console.print(Panel("\n".join(actions), title="Actions", style="blue"))
 
-        choice = Prompt.ask("Select action", choices=["v", "g", "i", "r", "q"], default="q")
+        choice = Prompt.ask("Select action", choices=["v", "g", "b", "i", "r", "q"], default="q")
 
         if choice == "v":
             console.print(Panel("VideoMaMa", style="magenta"))
@@ -506,6 +557,32 @@ def interactive_wizard(win_path: str, device: str | None = None) -> None:
             if Confirm.ask("Proceed with GVM?", default=False):
                 generate_alphas(raw, device=device)
                 Prompt.ask("GVM batch complete. Press Enter to re-scan")
+
+        elif choice == "b":
+            console.print(Panel("BiRefNet Auto-Matte", style="magenta"))
+            usage_list = get_birefnet_usage_options()
+            for i, name in enumerate(usage_list, 1):
+                console.print(f"[[bold]{i}[/bold]] {name}")
+
+            idx = IntPrompt.ask("Select Model ID", default=1)
+            try:
+                selected_usage = usage_list[idx - 1]
+                dilate = IntPrompt.ask("Enter dilation/erosion radius (-50 to 50, 0 to skip)", default=0)
+
+                console.print(f"Starting BiRefNet ({selected_usage}, Radius={dilate}) for {len(raw)} clips...")
+                if Confirm.ask(f"Proceed with {selected_usage}?", default=True):
+                    with ProgressContext() as ctx_progress:
+                        run_birefnet(
+                            raw,
+                            device=device,
+                            usage=selected_usage,
+                            dilate_radius=dilate,
+                            on_clip_start=ctx_progress.on_clip_start,
+                            on_frame_complete=ctx_progress.on_frame_complete,
+                        )
+                    Prompt.ask("BiRefNet batch complete. Press Enter to re-scan")
+            except IndexError:
+                console.print("[red]Invalid ID selected![/red]")
 
         elif choice == "i":
             console.print(Panel("Corridor Key Inference", style="magenta"))

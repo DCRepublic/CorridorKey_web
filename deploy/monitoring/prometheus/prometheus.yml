@@ -1,0 +1,24 @@
+# Prometheus configuration for CorridorKey (CRKY-27)
+#
+# Scrapes the /metrics endpoint from the CorridorKey web server.
+# Requires CK_METRICS_ENABLED=true on the web server.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: corridorkey
+    metrics_path: /metrics
+    # Uncomment if CK_METRICS_TOKEN is set on the web server:
+    # authorization:
+    #   type: Bearer
+    #   credentials: "your-metrics-token-here"
+    static_configs:
+      - targets:
+          - corridorkey-web:3000
+        labels:
+          instance: corridorkey-main

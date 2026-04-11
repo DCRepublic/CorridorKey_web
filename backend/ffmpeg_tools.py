@@ -107,12 +107,41 @@ def probe_video(path: str) -> dict:
     else:
         fps = float(fps_str)
 
-    # Frame count: prefer nb_frames, fall back to duration * fps
+    # Frame count: prefer nb_frames, fall back to count_packets, then duration * fps
     frame_count = 0
     if "nb_frames" in video_stream:
         try:
             frame_count = int(video_stream["nb_frames"])
         except (ValueError, TypeError):
+            pass
+
+    # Fallback: use ffprobe count_packets (reliable for MXF and other containers
+    # where nb_frames is missing). Slightly slower but accurate.
+    if frame_count <= 0:
+        try:
+            count_cmd = [
+                ffprobe,
+                "-v",
+                "quiet",
+                "-select_streams",
+                "v:0",
+                "-count_packets",
+                "-show_entries",
+                "stream=nb_read_packets",
+                "-print_format",
+                "csv=p=0",
+                path,
+            ]
+            count_result = subprocess.run(
+                count_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            if count_result.returncode == 0 and count_result.stdout.strip():
+                frame_count = int(count_result.stdout.strip())
+        except Exception:
             pass
 
     if frame_count <= 0:
@@ -202,7 +231,7 @@ def extract_frames(
             str(start_frame),
             "-vsync",
             "passthrough",
-            out_dir + "/" + pattern,
+            os.path.join(out_dir, pattern),
             "-y",
         ]
     else:
@@ -214,7 +243,7 @@ def extract_frames(
             "0",
             "-vsync",
             "passthrough",
-            out_dir + "/" + pattern,
+            os.path.join(out_dir, pattern),
             "-y",
         ]
 
@@ -327,7 +356,7 @@ def stitch_video(
         "-start_number",
         "0",
         "-i",
-        in_dir + "/" + pattern,
+        os.path.join(in_dir, pattern),
         "-c:v",
         codec,
         "-crf",

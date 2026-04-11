@@ -1,0 +1,338 @@
+"""JWT authentication middleware for the CorridorKey cloud platform.
+
+Validates Supabase-issued JWTs and injects user context into requests.
+Disabled by default (CK_AUTH_ENABLED=false) for backward compatibility
+with single-user local deployments.
+
+When enabled, every request (except /api/auth/* and static assets)
+must carry a valid Authorization: Bearer <JWT> header.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+import jwt
+from fastapi import HTTPException, Request
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import JSONResponse, Response
+
+logger = logging.getLogger(__name__)
+
+# JWT decode cache — avoids redundant HMAC verification for the same token
+_jwt_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # {token: (timestamp, claims)}
+_jwt_cache_lock = threading.Lock()
+_JWT_CACHE_TTL = 30  # seconds
+_JWT_CACHE_MAX = 1000  # max cached tokens
+
+# Configuration from environment
+AUTH_ENABLED = os.environ.get("CK_AUTH_ENABLED", "false").strip().lower() in ("true", "1", "yes")
+JWT_SECRET = os.environ.get("CK_JWT_SECRET", "").strip()
+JWT_ALGORITHMS = ["HS256"]
+
+# Paths that don't require authentication
+PUBLIC_PATHS = {
+    "/api/auth/login",
+    "/api/auth/signup",
+    "/api/auth/register",
+    "/api/auth/refresh",
+    "/api/auth/callback",
+    "/api/auth/forgot-password",
+    "/api/auth/status",
+    "/api/status",
+    "/api/status/badge",
+    "/api/banner",
+    "/api/health",
+    "/api/version",
+    # /metrics is public for Prometheus scraping (same Docker network).
+    # In production, restrict external access via reverse proxy (Caddy).
+    "/metrics",
+}
+
+# Paths that bypass auth only for specific HTTP methods
+_PUBLIC_GET_ONLY = {"/api/auth/me"}
+
+
+def _init_docs_paths() -> None:
+    """Add docs paths to PUBLIC_PATHS when CK_DOCS_PUBLIC is set (CRKY-32).
+
+    When public, FastAPI serves them directly (no auth needed).
+    When protected, docs_routes.py checks auth in the route handler itself.
+    """
+    from .openapi_config import DOCS_PUBLIC
+
+    if DOCS_PUBLIC:
+        PUBLIC_PATHS.update({"/docs", "/redoc", "/openapi.json"})
+
+
+_init_docs_paths()
+
+# Path prefixes that don't require authentication.
+# Only include true prefixes here — exact paths belong in PUBLIC_PATHS.
+PUBLIC_PREFIXES = (
+    "/_app/",  # SvelteKit static assets
+    "/ws",  # WebSocket (has its own auth, CRKY-13)
+    "/api/auth/invite/validate",  # Invite validation (pre-signup, unauthenticated)
+    "/api/auth/invite/consume",  # Invite consumption (post-signup, unauthenticated)
+    "/api/nodes/",  # Nodes use CK_AUTH_TOKEN, not JWT
+    "/api/system/weights/",  # Weight sync for nodes
+)
+
+
+@dataclass
+class UserContext:
+    """Authenticated user context injected into request state."""
+
+    user_id: str
+    email: str = ""
+    tier: str = "pending"  # pending, member, contributor, org_admin, platform_admin
+    org_ids: list[str] = field(default_factory=list)
+    raw_claims: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_admin(self) -> bool:
+        return self.tier == "platform_admin"
+
+    @property
+    def is_contributor(self) -> bool:
+        return self.tier in ("contributor", "org_admin", "platform_admin")
+
+    @property
+    def is_member(self) -> bool:
+        return self.tier in ("member", "contributor", "org_admin", "platform_admin")
+
+
+def get_current_user(request: Request) -> UserContext | None:
+    """Extract the authenticated user from request state.
+
+    Returns None if auth is disabled or user is not authenticated.
+    Use this in route handlers to get user context.
+    """
+    return getattr(request.state, "user", None)
+
+
+def require_user(request: Request) -> UserContext:
+    """Extract the authenticated user, raising 401 if not present.
+
+    Use this in route handlers that require authentication.
+    """
+    user = get_current_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
+TIER_HIERARCHY = ["pending", "member", "contributor", "org_admin", "platform_admin"]
+
+
+def require_tier(request: Request, min_tier: str) -> UserContext:
+    """Require a minimum trust tier. Raises 403 if insufficient.
+
+    Tier hierarchy: pending < member < contributor < org_admin < platform_admin
+    """
+    user = require_user(request)
+    try:
+        user_level = TIER_HIERARCHY.index(user.tier)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Insufficient permissions.") from None
+    try:
+        min_level = TIER_HIERARCHY.index(min_tier)
+    except ValueError:
+        raise HTTPException(status_code=500, detail=f"Invalid tier requirement: {min_tier}") from None
+    if user_level < min_level:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Insufficient permissions. Requires {min_tier} tier or higher.",
+        )
+    return user
+
+
+def _decode_jwt(token: str) -> dict[str, Any]:
+    """Decode and validate a Supabase JWT. Cached for 30s per token."""
+    now = time.time()
+
+    # Check cache first (avoids HMAC verification on every request)
+    with _jwt_cache_lock:
+        cached = _jwt_cache.get(token)
+        if cached and now - cached[0] < _JWT_CACHE_TTL:
+            return cached[1]
+
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=JWT_ALGORITHMS, audience="authenticated")
+    except jwt.ExpiredSignatureError as e:
+        raise HTTPException(status_code=401, detail="Token expired") from e
+    except jwt.InvalidTokenError as e:
+        logger.debug(f"JWT validation failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid token") from e
+
+    with _jwt_cache_lock:
+        # Evict stale entries if cache is full
+        if len(_jwt_cache) >= _JWT_CACHE_MAX:
+            cutoff = now - _JWT_CACHE_TTL
+            stale = [k for k, (ts, _) in _jwt_cache.items() if ts < cutoff]
+            for k in stale:
+                del _jwt_cache[k]
+            # If still full after eviction, clear oldest half
+            if len(_jwt_cache) >= _JWT_CACHE_MAX:
+                sorted_keys = sorted(_jwt_cache, key=lambda k: _jwt_cache[k][0])
+                for k in sorted_keys[: len(sorted_keys) // 2]:
+                    del _jwt_cache[k]
+        _jwt_cache[token] = (now, payload)
+
+    return payload
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """FastAPI middleware that validates JWTs and injects user context.
+
+    When CK_AUTH_ENABLED=false (default), all requests pass through
+    with request.state.user = None. Existing endpoints work unchanged.
+
+    When CK_AUTH_ENABLED=true, requests without a valid JWT get a 401,
+    except for public paths (auth endpoints, static assets, health).
+    """
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        request.state.user = None
+
+        if not AUTH_ENABLED:
+            return await call_next(request)
+
+        path = request.url.path
+
+        # Skip auth for public paths
+        if path in PUBLIC_PATHS or any(path.startswith(p) for p in PUBLIC_PREFIXES):
+            # Weight sync endpoints are public for GET (nodes) but not POST (admin)
+            if path.startswith("/api/system/weights/") and request.method == "POST":
+                pass  # fall through to JWT validation below
+            else:
+                return await call_next(request)
+
+        # Paths that bypass auth for GET only (e.g., /api/auth/me for pending page polling)
+        if path in _PUBLIC_GET_ONLY and request.method == "GET":
+            return await call_next(request)
+
+        # Protected docs routes handle their own auth checks (CRKY-32).
+        # Let the request through so the route handler can inspect request.state.user.
+        _DOCS_PATHS = {"/docs", "/redoc", "/openapi.json"}
+        if path in _DOCS_PATHS:
+            # Try to populate user context (best-effort) but don't block
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                try:
+                    claims = _decode_jwt(auth_header[7:])
+                    app_metadata = claims.get("app_metadata", {})
+                    request.state.user = UserContext(
+                        user_id=claims.get("sub", ""),
+                        email=claims.get("email", ""),
+                        tier=app_metadata.get("tier", "pending"),
+                        org_ids=app_metadata.get("org_ids", []),
+                        raw_claims=claims,
+                    )
+                except Exception:
+                    pass
+            return await call_next(request)
+
+        # Skip auth for SPA fallback (non-API, non-WS GET requests serve index.html)
+        if not path.startswith("/api/") and request.method == "GET":
+            return await call_next(request)
+
+        # Extract Bearer token from header
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        else:
+            # Query param token ONLY for preview/download endpoints (img/video src tags)
+            # Restricted to prevent JWT leakage via URLs, logs, and referrer headers
+            _QUERY_TOKEN_PREFIXES = ("/api/preview/",)
+            if any(path.startswith(p) for p in _QUERY_TOKEN_PREFIXES):
+                token = request.query_params.get("token", "")
+            else:
+                token = ""
+
+        if not token:
+            return JSONResponse(status_code=401, content={"detail": "Missing Authorization header"})
+        try:
+            claims = _decode_jwt(token)
+        except HTTPException as e:
+            return JSONResponse(status_code=e.status_code, content={"detail": e.detail})
+
+        # Build user context from JWT claims
+        # Supabase JWTs contain: sub (user_id), email, role, app_metadata, user_metadata
+        app_metadata = claims.get("app_metadata", {})
+
+        user_id = claims.get("sub", "")
+        if not user_id:
+            return JSONResponse(status_code=401, content={"detail": "Invalid token: missing subject"})
+        email = claims.get("email", "")
+
+        jwt_tier = app_metadata.get("tier", "pending")
+
+        request.state.user = UserContext(
+            user_id=user_id,
+            email=email,
+            tier=jwt_tier,
+            org_ids=app_metadata.get("org_ids", []),
+            raw_claims=claims,
+        )
+
+        # Cross-check tier against local store — use the LOCAL store as authoritative.
+        # This ensures both promotions and demotions take effect immediately,
+        # without waiting for JWT refresh from GoTrue.
+        if user_id:
+            try:
+                from .users import get_user_store as _get_user_store
+
+                local_user = _get_user_store().get_user(user_id)
+                if local_user and local_user.tier in TIER_HIERARCHY and local_user.tier != jwt_tier:
+                    request.state.user.tier = local_user.tier
+            except Exception:
+                pass  # Local store unavailable — fall back to JWT tier
+
+        # Block rejected users at the middleware level
+        if request.state.user.tier == "rejected":
+            return JSONResponse(status_code=403, content={"detail": "Account rejected"})
+
+        # Auto-register user in local store on first auth.
+        # Handles users created via create-admin.sh or GoTrue admin API
+        # who don't have a local record yet.
+        if user_id and email:
+            try:
+                from .users import get_user_store
+
+                store = get_user_store()
+                # Link email-based signup record to real UUID (CRKY-61)
+                if store.get_user(email) and not store.get_user(user_id):
+                    store.link_uuid(email, user_id)
+                # Auto-register if not in local store at all
+                if not store.get_user(user_id):
+                    tier = app_metadata.get("tier", "pending")
+                    store.record_signup(user_id=user_id, email=email)
+                    if tier != "pending":
+                        store.set_tier(user_id, tier)
+
+                # Ensure personal org exists (may be missing if approved via tier dropdown)
+                from .orgs import get_org_store
+
+                org_store = get_org_store()
+                if not org_store.get_personal_org(user_id):
+                    tier = app_metadata.get("tier", "pending")
+                    if tier != "pending":
+                        # Use display name from user store if available
+                        user_record = store.get_user(user_id)
+                        display_name = user_record.name if user_record else ""
+                        personal_org = org_store.ensure_personal_org(user_id, email, display_name=display_name)
+                        from .gpu_credits import STARTER_CREDITS, add_contributed
+
+                        if STARTER_CREDITS > 0:
+                            add_contributed(personal_org.org_id, STARTER_CREDITS)
+                        logger.info(f"Auto-created personal org for {email}")
+            except Exception:
+                logger.warning(f"Auto-registration failed for {email}", exc_info=True)
+
+        return await call_next(request)

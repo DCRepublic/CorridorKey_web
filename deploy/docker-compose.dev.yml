@@ -1,0 +1,195 @@
+# Full development stack — CorridorKey + Supabase, one command.
+#
+# Setup:
+#   cp .env.example .env    # then edit .env with your secrets
+#
+# Run from deploy/ directory:
+#   docker compose -f docker-compose.dev.yml --env-file .env up -d --build
+#
+# Or use the shorthand:
+#   ./dev-up.sh
+
+services:
+  # ─── Supabase Stack ──────────────────────────────────────────────
+
+  supabase-db:
+    image: supabase/postgres:15.6.1.143
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-54322}:5432"
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.supabase}
+      POSTGRES_DB: ${POSTGRES_DB:-corridorkey}
+    volumes:
+      - supabase-db-data:/var/lib/postgresql/data
+      - ./init-roles.sql:/docker-entrypoint-initdb.d/00-init-roles.sql:ro
+      - ./init-db.sql:/docker-entrypoint-initdb.d/99-corridorkey.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supabase_admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  supabase-auth:
+    image: supabase/gotrue:v2.170.0
+    restart: unless-stopped
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL:-http://localhost:54321}
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@supabase-db:5432/${POSTGRES_DB:-corridorkey}?sslmode=disable
+      GOTRUE_SITE_URL: ${SITE_URL:-http://localhost:3000}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS:-}
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-true}
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY:-3600}
+      GOTRUE_JWT_SECRET: ${GOTRUE_JWT_SECRET:-${JWT_SECRET:?Set JWT_SECRET in .env}}
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: true
+      GOTRUE_MAILER_AUTOCONFIRM: ${MAILER_AUTOCONFIRM:-true}
+      GOTRUE_SMTP_HOST: ${SMTP_HOST:-}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT:-587}
+      GOTRUE_SMTP_USER: ${SMTP_USER:-}
+      GOTRUE_SMTP_PASS: ${SMTP_PASS:-}
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL:-noreply@corridorkey.local}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-CorridorKey}
+    ports:
+      - "${GOTRUE_PORT:-54324}:9999"
+
+  supabase-rest:
+    image: postgrest/postgrest:v12.2.3
+    restart: unless-stopped
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@supabase-db:5432/${POSTGRES_DB:-corridorkey}
+      PGRST_DB_SCHEMAS: public,storage
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+    ports:
+      - "${POSTGREST_PORT:-54321}:3000"
+
+  supabase-studio:
+    image: supabase/studio:latest
+    restart: unless-stopped
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    environment:
+      STUDIO_PG_META_URL: http://supabase-meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: CorridorKey
+      DEFAULT_PROJECT_NAME: CorridorKey Cloud
+      SUPABASE_URL: http://supabase-rest:3000
+      SUPABASE_PUBLIC_URL: ${API_EXTERNAL_URL:-http://localhost:54321}
+      SUPABASE_ANON_KEY: ${ANON_KEY:-}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY:-}
+    ports:
+      - "${STUDIO_PORT:-54323}:3000"
+
+  supabase-meta:
+    image: supabase/postgres-meta:v0.84.2
+    restart: unless-stopped
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: 8080
+      PG_META_DB_HOST: supabase-db
+      PG_META_DB_PORT: 5432
+      PG_META_DB_NAME: ${POSTGRES_DB:-corridorkey}
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+
+  # ─── Redis (shared state for multi-instance) ─────────────────────
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory-policy noeviction
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── CorridorKey Web Server ──────────────────────────────────────
+
+  corridorkey-web:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile.web
+    user: "${UID:-1000}:${GID:-1000}"
+    restart: unless-stopped
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    ports:
+      - "${CK_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - OPENCV_IO_ENABLE_OPENEXR=1
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - CK_CLIPS_DIR=/app/Projects
+      - CK_AUTH_ENABLED=${CK_AUTH_ENABLED:-false}
+      - CK_JWT_SECRET=${JWT_SECRET:-}
+      - CK_SUPABASE_URL=http://supabase-rest:3000
+      - CK_SUPABASE_SERVICE_KEY=${SERVICE_ROLE_KEY:-}
+      - CK_GOTRUE_URL=http://localhost:${GOTRUE_PORT:-54324}
+      - CK_GOTRUE_INTERNAL_URL=http://supabase-auth:9999
+      - CK_AUTH_TOKEN=${CK_AUTH_TOKEN:-}
+      - CK_DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/${POSTGRES_DB:-corridorkey}
+      - CK_MIGRATION_URL=postgresql://supabase_admin:${POSTGRES_PASSWORD}@supabase-db:5432/${POSTGRES_DB:-corridorkey}
+      - CK_SENTRY_DSN=${CK_SENTRY_DSN:-}
+      - CK_METRICS_ENABLED=${CK_METRICS_ENABLED:-true}
+      - CK_ENVIRONMENT=${CK_ENVIRONMENT:-development}
+      - CK_LOG_FORMAT=${CK_LOG_FORMAT:-text}
+      - CK_DOCS_PUBLIC=${CK_DOCS_PUBLIC:-true}
+      - CK_STORAGE_BACKEND=${CK_STORAGE_BACKEND:-local}
+      - CK_S3_BUCKET=${CK_S3_BUCKET:-}
+      - CK_S3_PREFIX=${CK_S3_PREFIX:-}
+      - CK_S3_ENDPOINT_URL=${CK_S3_ENDPOINT_URL:-}
+      - CK_S3_REGION=${CK_S3_REGION:-us-east-1}
+      - CK_S3_ACCESS_KEY_ID=${CK_S3_ACCESS_KEY_ID:-}
+      - CK_S3_SECRET_ACCESS_KEY=${CK_S3_SECRET_ACCESS_KEY:-}
+      - CK_REDIS_URL=${CK_REDIS_URL:-redis://redis:6379/0}
+      - CK_SMTP_HOST=${SMTP_HOST:-}
+      - CK_SMTP_PORT=${SMTP_PORT:-587}
+      - CK_SMTP_USER=${SMTP_USER:-}
+      - CK_SMTP_PASS=${SMTP_PASS:-}
+      - CK_SMTP_FROM_EMAIL=${SMTP_ADMIN_EMAIL:-noreply@corridorkey.cloud}
+      - CK_SMTP_FROM_NAME=${SMTP_SENDER_NAME:-CorridorKey}
+      - CK_SITE_URL=${SITE_URL:-http://localhost:3000}
+    volumes:
+      - ${CK_PROJECTS_DIR:-./Projects}:/app/Projects
+      - ${CK_WEIGHTS_DIR:-./weights}/corridorkey:/app/CorridorKeyModule/checkpoints
+      - ${CK_WEIGHTS_DIR:-./weights}/gvm:/app/gvm_core/weights
+      - ${CK_WEIGHTS_DIR:-./weights}/videomama:/app/VideoMaMaInferenceModule/checkpoints/VideoMaMa
+
+volumes:
+  supabase-db-data:
+  redis-data:

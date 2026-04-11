@@ -16,11 +16,12 @@ os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 import cv2
 import numpy as np
 
-from backend.frame_io import EXR_WRITE_FLAGS
+from backend.frame_io import EXR_WRITE_FLAGS, read_image_frame
 from device_utils import resolve_device
 
 if TYPE_CHECKING:
     from gvm_core import GVMProcessor
+from BiRefNetModule.wrapper import BiRefNetHandler, usage_to_weights_file
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ class InferenceSettings:
     auto_despeckle: bool = True
     despeckle_size: int = 400
     refiner_scale: float = 1.0
+    generate_comp: bool = True
+    gpu_post_processing: bool = False
 
 
 # Core Paths
@@ -149,7 +152,7 @@ class ClipEntry:
 
         if target_alpha_dir:
             if not os.listdir(target_alpha_dir):
-                logging.warning(f"Clip '{self.name}': AlphaHint directory exists but is empty. Marking for generation.")
+                logger.warning(f"Clip '{self.name}': AlphaHint directory exists but is empty. Marking for generation.")
                 self.alpha_asset = None
             else:
                 # Check for image sequence first
@@ -160,7 +163,7 @@ class ClipEntry:
                     if video_candidates:
                         self.alpha_asset = ClipAsset(os.path.join(target_alpha_dir, video_candidates[0]), "video")
                     else:
-                        logging.warning(
+                        logger.warning(
                             f"Clip '{self.name}': AlphaHint directory has no valid image or video files."
                             " Marking for generation."
                         )
@@ -284,6 +287,68 @@ def generate_alphas(
             import traceback
 
             traceback.print_exc()
+
+
+def get_birefnet_usage_options():
+    return list(usage_to_weights_file.keys())
+
+
+def run_birefnet(
+    clips,
+    device=None,
+    usage="General",
+    dilate_radius=0,
+    *,
+    on_clip_start: Callable[[str, int], None] | None = None,
+    on_frame_complete: Callable[[int, int], None] | None = None,
+):
+    clips_to_process = [c for c in clips if c.alpha_asset is None]
+
+    if not clips_to_process:
+        logger.info("All clips have valid Alpha assets. No BiRefNet generation needed.")
+        return
+
+    if device is None:
+        device = resolve_device()
+
+    logger.info(f"Found {len(clips_to_process)} clips missing Alpha.")
+
+    logger.info(f"Initializing BiRefNet ({usage}) on {device}...")
+    # Initialize the handler once
+    try:
+        handler = BiRefNetHandler(device=device, usage=usage)
+    except ImportError as e:
+        logger.error(f"BiRefNet Import Error: {e}")
+        return
+    except Exception as e:
+        logger.error(f"BiRefNet Initialization Error: {e}")
+        return
+
+    try:
+        for clip in clips_to_process:
+            logger.info(f"Generating BiRefNet Alpha for: {clip.name}")
+            if on_clip_start:
+                on_clip_start(clip.name, clip.input_asset.frame_count)
+
+            alpha_output_dir = os.path.join(clip.root_path, "AlphaHint")
+            os.makedirs(alpha_output_dir, exist_ok=True)
+
+            try:
+                handler.process(
+                    input_path=clip.input_asset.path,
+                    alpha_output_dir=alpha_output_dir,
+                    dilate_radius=dilate_radius,
+                    on_frame_complete=on_frame_complete,
+                )
+                logger.info(f"BiRefNet complete for {clip.name}")
+            except Exception as e:
+                logger.error(f"BiRefNet failed for {clip.name}: {e}")
+                import traceback
+
+                traceback.print_exc()
+
+    finally:
+        handler.cleanup()
 
 
 def run_videomama(
@@ -535,6 +600,7 @@ def run_inference(
     device=None,
     backend=None,
     max_frames=None,
+    skip_existing=False,
     settings: InferenceSettings | None = None,
     *,
     on_clip_start: Callable[[str, int], None] | None = None,
@@ -607,7 +673,23 @@ def run_inference(
         if on_clip_start:
             on_clip_start(clip.name, num_frames)
 
+        skipped_count = 0
+
         for i in range(num_frames):
+            # Pre-compute output stem for skip-existing check (mirrors how input_stem
+            # is set later: video -> zero-padded index, sequence -> file stem)
+            if clip.input_asset.type == "video":
+                expected_stem = f"{i:05d}"
+            else:
+                expected_stem = os.path.splitext(input_files[i])[0]
+
+            if skip_existing and os.path.exists(os.path.join(comp_dir, f"{expected_stem}.png")):
+                logger.debug("Frame %d already rendered, skipping.", i)
+                skipped_count += 1
+                if on_frame_complete:
+                    on_frame_complete(i, num_frames)
+                continue
+
             # 1. Read Input
             img_srgb = None
             input_stem = f"{i:05d}"
@@ -628,12 +710,9 @@ def run_inference(
 
                 is_exr = fpath.lower().endswith(".exr")
                 if is_exr:
-                    img_linear = cv2.imread(fpath, cv2.IMREAD_UNCHANGED)
-                    if img_linear is None:
+                    img_srgb = read_image_frame(fpath, gamma_correct_exr=not input_is_linear)
+                    if img_srgb is None:
                         continue
-                    img_linear_rgb = cv2.cvtColor(img_linear, cv2.COLOR_BGR2RGB)
-                    # Support overriding EXR behavior if user picked 's'
-                    img_srgb = np.maximum(img_linear_rgb, 0.0)
                 else:
                     img_bgr = cv2.imread(fpath)
                     if img_bgr is None:
@@ -686,6 +765,8 @@ def run_inference(
                 auto_despeckle=settings.auto_despeckle,
                 despeckle_size=settings.despeckle_size,
                 refiner_scale=settings.refiner_scale,
+                generate_comp=settings.generate_comp,
+                post_process_on_gpu=settings.gpu_post_processing,
             )
 
             pred_fg = res["fg"]  # sRGB
@@ -705,10 +786,11 @@ def run_inference(
             cv2.imwrite(os.path.join(matte_dir, f"{input_stem}.exr"), pred_alpha, EXR_WRITE_FLAGS)
 
             # 5. Generate Reference Comp
-            comp_srgb = res["comp"]
-            # Save Comp (PNG 8-bit)
-            comp_bgr = cv2.cvtColor((np.clip(comp_srgb, 0.0, 1.0) * 255.0).astype(np.uint8), cv2.COLOR_RGB2BGR)
-            cv2.imwrite(os.path.join(comp_dir, f"{input_stem}.png"), comp_bgr)
+            if res["comp"] is not None:
+                comp_srgb = res["comp"]
+                # Save Comp (PNG 8-bit)
+                comp_bgr = cv2.cvtColor((np.clip(comp_srgb, 0.0, 1.0) * 255.0).astype(np.uint8), cv2.COLOR_RGB2BGR)
+                cv2.imwrite(os.path.join(comp_dir, f"{input_stem}.png"), comp_bgr)
 
             # 6. Save Processed (RGBA EXR)
             if "processed" in res:
@@ -725,6 +807,50 @@ def run_inference(
             input_cap.release()
         if alpha_cap:
             alpha_cap.release()
+
+        if skip_existing and skipped_count > 0:
+            logger.info(
+                "  Skipped %d of %d frames (outputs already exist).",
+                skipped_count,
+                num_frames,
+            )
+
+        # 7. Stitch comp frames into MP4 (if input was video)
+        if clip.input_asset and clip.input_asset.type == "video":
+            try:
+                from backend.ffmpeg_tools import find_ffmpeg, probe_video, stitch_video
+
+                if find_ffmpeg():
+                    # Get source fps
+                    try:
+                        video_info = probe_video(clip.input_asset.path)
+                        fps = video_info.get("fps", 24.0)
+                    except Exception:
+                        fps = 24.0
+
+                    comp_video_path = os.path.join(clip_out_root, f"{clip.name}_comp.mp4")
+
+                    # Detect frame pattern from saved files
+                    comp_files = sorted(f for f in os.listdir(comp_dir) if f.endswith(".png"))
+                    if comp_files:
+                        # Frames are named {input_stem}.png — e.g. 00000.png
+                        # Build ffmpeg pattern from first file
+                        first = comp_files[0]
+                        stem = os.path.splitext(first)[0]
+                        if stem.isdigit():
+                            pattern = f"%0{len(stem)}d.png"
+                        else:
+                            pattern = "frame_%06d.png"
+
+                        logger.info(f"Stitching comp video: {comp_dir} -> {comp_video_path} @ {fps} fps")
+                        stitch_video(comp_dir, comp_video_path, fps=fps, pattern=pattern)
+                    else:
+                        logger.warning(f"No comp frames found in {comp_dir}, skipping video stitch.")
+                else:
+                    logger.info("ffmpeg not found — skipping comp video stitch.")
+            except Exception as e:
+                logger.warning(f"Comp video stitch failed (non-fatal): {e}")
+
         logger.info(f"Clip {clip.name} Complete.")
 
 
@@ -861,14 +987,11 @@ def scan_clips() -> list[ClipEntry]:
             invalid_clips.append((d, f"Unexpected error: {e}"))
 
     if invalid_clips:
-        print("\n" + "=" * 60)
-        print(" INVALID OR SKIPPED CLIPS")
-        print("=" * 60)
+        logger.warning("INVALID OR SKIPPED CLIPS:")
         for name, reason in invalid_clips:
-            print(f"- {name}: {reason}")
-        print("=" * 60 + "\n")
+            logger.warning("  - %s: %s", name, reason)
     else:
-        print("\nAll clip folders appear valid.\n")
+        logger.info("All clip folders appear valid.")
 
     return valid_clips
 

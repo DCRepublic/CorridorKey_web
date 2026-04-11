@@ -136,6 +136,8 @@ class ClipEntry:
     alpha_asset: ClipAsset | None = None
     mask_asset: ClipAsset | None = None  # User-provided VideoMaMa mask
     in_out_range: InOutRange | None = None  # Per-clip in/out markers (None = full clip)
+    folder_name: str | None = None  # folder within project (None = loose clip)
+    project_name: str | None = None  # project directory name
     warnings: list[str] = field(default_factory=list)
     error_message: str | None = None
     extraction_progress: float = 0.0  # 0.0 to 1.0 during EXTRACTING
@@ -202,7 +204,7 @@ class ClipEntry:
         """
         manifest = self._read_manifest()
         if manifest:
-            enabled = manifest.get("enabled_outputs", [])
+            enabled = manifest.get("enabled_outputs", []) or ["fg", "matte"]
         else:
             enabled = ["fg", "matte"]
 
@@ -352,12 +354,16 @@ class ClipEntry:
         # READY: AlphaHint must cover ALL input frames (not partial)
         if self.alpha_asset is not None:
             if self.input_asset is not None and self.alpha_asset.frame_count < self.input_asset.frame_count:
-                # Partial alpha — don't promote to READY, fall through
+                # Partial alpha — stay RAW so user can re-run GVM.
+                # Don't fall through to MASKED/EXTRACTING which would
+                # incorrectly demote the clip's pipeline stage.
                 logger.info(
                     f"Clip '{self.name}': partial alpha "
                     f"({self.alpha_asset.frame_count}/{self.input_asset.frame_count}), "
-                    f"staying at lower state"
+                    f"staying at RAW"
                 )
+                self.state = ClipState.RAW
+                return
             else:
                 self.state = ClipState.READY
                 return
@@ -386,20 +392,44 @@ def scan_project_clips(project_dir: str) -> list[ClipEntry]:
     from .project import is_v2_project
 
     if is_v2_project(project_dir):
+        project_name = os.path.basename(project_dir)
         clips_dir = os.path.join(project_dir, "clips")
         entries: list[ClipEntry] = []
+        # Scan loose clips in clips/
         for item in sorted(os.listdir(clips_dir)):
             item_path = os.path.join(clips_dir, item)
             if item.startswith(".") or item.startswith("_"):
                 continue
             if not os.path.isdir(item_path):
                 continue
-            clip = ClipEntry(name=item, root_path=item_path)
+            clip = ClipEntry(name=item, root_path=item_path, project_name=project_name)
             try:
                 clip.find_assets()
                 entries.append(clip)
             except ClipScanError as e:
                 logger.debug(str(e))
+        # Scan clips inside folders/
+        folders_dir = os.path.join(project_dir, "folders")
+        if os.path.isdir(folders_dir):
+            for folder_name in sorted(os.listdir(folders_dir)):
+                folder_path = os.path.join(folders_dir, folder_name)
+                if not os.path.isdir(folder_path) or folder_name.startswith("."):
+                    continue
+                for item in sorted(os.listdir(folder_path)):
+                    item_path = os.path.join(folder_path, item)
+                    if not os.path.isdir(item_path) or item.startswith("."):
+                        continue
+                    clip = ClipEntry(
+                        name=item,
+                        root_path=item_path,
+                        folder_name=folder_name,
+                        project_name=project_name,
+                    )
+                    try:
+                        clip.find_assets()
+                        entries.append(clip)
+                    except ClipScanError as e:
+                        logger.debug(str(e))
         logger.info(f"Scanned v2 project {project_dir}: {len(entries)} clip(s)")
         return entries
 
@@ -463,15 +493,29 @@ def scan_clips_dir(
                         entries.append(clip)
                         seen_names.add(clip.name)
             else:
-                # Flat clip dir or v1 project
-                clip = ClipEntry(name=item, root_path=item_path)
-                try:
-                    clip.find_assets()
-                    entries.append(clip)
-                    seen_names.add(clip.name)
-                except ClipScanError as e:
-                    # Skip folders without valid input assets
-                    logger.debug(str(e))
+                # Could be an org subdirectory containing projects,
+                # or a flat clip dir. Check for nested projects first.
+                has_nested_projects = any(
+                    is_v2_project(os.path.join(item_path, sub))
+                    for sub in os.listdir(item_path)
+                    if os.path.isdir(os.path.join(item_path, sub)) and not sub.startswith(".")
+                )
+                if has_nested_projects:
+                    # Org-level directory: recurse to find projects inside
+                    for clip in scan_clips_dir(item_path, allow_standalone_videos=False):
+                        if clip.name not in seen_names:
+                            entries.append(clip)
+                            seen_names.add(clip.name)
+                else:
+                    # Flat clip dir or v1 project
+                    clip = ClipEntry(name=item, root_path=item_path)
+                    try:
+                        clip.find_assets()
+                        entries.append(clip)
+                        seen_names.add(clip.name)
+                    except ClipScanError as e:
+                        # Skip folders without valid input assets
+                        logger.debug(str(e))
 
         elif allow_standalone_videos and os.path.isfile(item_path) and _is_video_file(item_path):
             # Standalone video file → treat as a clip needing extraction

@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import sys
+import uuid
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,28 @@ _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".exr", ".tif", ".tiff", ".bmp
 VIDEO_FILE_FILTER = "Video Files (*.mp4 *.mov *.avi *.mkv *.mxf *.webm *.m4v);;All Files (*)"
 
 _app_dir: str | None = None
+
+
+def _dedupe_path(parent_dir: str, stem: str) -> tuple[str, str]:
+    """Return a unique child path under *parent_dir* and its final stem.
+
+    If ``{parent_dir}/{stem}`` already exists, appends numeric suffixes
+    (``_2``, ``_3``, ...) until a free path is found.
+
+    Unlike fixed-range probes, this never silently falls back to an existing
+    path after enough collisions.
+    """
+    path = os.path.join(parent_dir, stem)
+    if not os.path.exists(path):
+        return path, stem
+
+    index = 2
+    while True:
+        candidate_stem = f"{stem}_{index}"
+        candidate_path = os.path.join(parent_dir, candidate_stem)
+        if not os.path.exists(candidate_path):
+            return candidate_path, candidate_stem
+        index += 1
 
 
 def set_app_dir(path: str) -> None:
@@ -77,6 +100,7 @@ def create_project(
     *,
     copy_source: bool = True,
     display_name: str | None = None,
+    root_dir: str | None = None,
 ) -> str:
     """Create a new project folder for one or more source videos.
 
@@ -105,7 +129,7 @@ def create_project(
     if not source_video_paths:
         raise ValueError("At least one source video path is required")
 
-    root = projects_root()
+    root = root_dir or projects_root()
 
     if display_name and display_name.strip():
         clean = display_name.strip()
@@ -119,16 +143,11 @@ def create_project(
         project_display_name = name_stem.replace("_", " ")
 
     timestamp = datetime.now().strftime("%y%m%d_%H%M%S")
-    folder_name = f"{timestamp}_{name_stem}"
+    uid = uuid.uuid4().hex[:6]
+    folder_name = f"{timestamp}_{uid}_{name_stem}"
 
     # Deduplicate if folder already exists (e.g. rapid imports)
-    project_dir = os.path.join(root, folder_name)
-    if os.path.exists(project_dir):
-        for i in range(2, 100):
-            candidate = os.path.join(root, f"{folder_name}_{i}")
-            if not os.path.exists(candidate):
-                project_dir = candidate
-                break
+    project_dir, _ = _dedupe_path(root, folder_name)
 
     clips_dir = os.path.join(project_dir, "clips")
     os.makedirs(clips_dir, exist_ok=True)
@@ -161,28 +180,33 @@ def add_clips_to_project(
     source_video_paths: list[str],
     *,
     copy_source: bool = True,
+    folder_name: str | None = None,
 ) -> list[str]:
-    """Add new clips to an existing project.
+    """Add new clips to an existing project, optionally inside a folder.
 
     Args:
         project_dir: Absolute path to the project folder.
         source_video_paths: List of video file paths to add.
         copy_source: Whether to copy videos into clip folders.
+        folder_name: If set, place clips in folders/{folder_name}/ instead of clips/.
 
     Returns:
         List of new clip subfolder paths (absolute).
     """
-    clips_dir = os.path.join(project_dir, "clips")
-    os.makedirs(clips_dir, exist_ok=True)
+    if folder_name:
+        target_dir = os.path.join(project_dir, "folders", folder_name)
+    else:
+        target_dir = os.path.join(project_dir, "clips")
+    os.makedirs(target_dir, exist_ok=True)
 
     new_paths: list[str] = []
     for video_path in source_video_paths:
         clip_name = _create_clip_folder(
-            clips_dir,
+            target_dir,
             video_path,
             copy_source=copy_source,
         )
-        new_paths.append(os.path.join(clips_dir, clip_name))
+        new_paths.append(os.path.join(target_dir, clip_name))
 
     # Update project.json clips list
     data = read_project_json(project_dir) or {}
@@ -209,14 +233,7 @@ def _create_clip_folder(
     clip_name = sanitize_stem(filename)
 
     # Deduplicate clip folder names within same project
-    clip_dir = os.path.join(clips_dir, clip_name)
-    if os.path.exists(clip_dir):
-        for i in range(2, 100):
-            candidate = os.path.join(clips_dir, f"{clip_name}_{i}")
-            if not os.path.exists(candidate):
-                clip_dir = candidate
-                clip_name = f"{clip_name}_{i}"
-                break
+    clip_dir, clip_name = _dedupe_path(clips_dir, clip_name)
 
     source_dir = os.path.join(clip_dir, "Source")
     os.makedirs(source_dir, exist_ok=True)
@@ -264,6 +281,81 @@ def get_clip_dirs(project_dir: str) -> list[str]:
 def is_v2_project(project_dir: str) -> bool:
     """Check if a project uses the v2 nested clips structure."""
     return os.path.isdir(os.path.join(project_dir, "clips"))
+
+
+def create_folder(project_dir: str, folder_name: str) -> str:
+    """Create a named folder inside a project. Returns the folder path."""
+    folders_dir = os.path.join(project_dir, "folders")
+    os.makedirs(folders_dir, exist_ok=True)
+    clean = sanitize_stem(folder_name)
+    folder_path, final_name = _dedupe_path(folders_dir, clean)
+    os.makedirs(folder_path, exist_ok=True)
+    # Update project.json
+    data = read_project_json(project_dir) or {}
+    folder_list = data.get("folders", [])
+    if final_name not in folder_list:
+        folder_list.append(final_name)
+        data["folders"] = folder_list
+        write_project_json(project_dir, data)
+    logger.info(f"Created folder '{final_name}' in project {os.path.basename(project_dir)}")
+    return folder_path
+
+
+def get_folder_dirs(project_dir: str) -> list[str]:
+    """Return absolute paths to all folder subdirectories in a project."""
+    folders_dir = os.path.join(project_dir, "folders")
+    if not os.path.isdir(folders_dir):
+        return []
+    return sorted(
+        os.path.join(folders_dir, d)
+        for d in os.listdir(folders_dir)
+        if os.path.isdir(os.path.join(folders_dir, d)) and not d.startswith(".")
+    )
+
+
+def move_clip_to_folder(project_dir: str, clip_name: str, target_folder: str | None) -> str:
+    """Move a clip to a folder (or to loose clips/ if target_folder is None).
+
+    Returns the new clip path.
+    """
+    # Find current location
+    clips_dir = os.path.join(project_dir, "clips")
+    current_path = os.path.join(clips_dir, clip_name)
+    if not os.path.isdir(current_path):
+        # Check inside folders/
+        folders_dir = os.path.join(project_dir, "folders")
+        if os.path.isdir(folders_dir):
+            for fname in os.listdir(folders_dir):
+                candidate = os.path.join(folders_dir, fname, clip_name)
+                if os.path.isdir(candidate):
+                    current_path = candidate
+                    break
+
+    if not os.path.isdir(current_path):
+        raise FileNotFoundError(f"Clip '{clip_name}' not found in project")
+
+    # Determine target
+    if target_folder:
+        target_parent = os.path.join(project_dir, "folders", target_folder)
+        os.makedirs(target_parent, exist_ok=True)
+    else:
+        target_parent = clips_dir
+
+    new_path = os.path.join(target_parent, clip_name)
+    if new_path == current_path:
+        return current_path
+
+    shutil.move(current_path, new_path)
+
+    # Clean up empty source folder directory
+    old_parent = os.path.dirname(current_path)
+    if old_parent != clips_dir and os.path.isdir(old_parent):
+        remaining = [d for d in os.listdir(old_parent) if not d.startswith(".")]
+        if not remaining:
+            shutil.rmtree(old_parent)
+
+    logger.info(f"Moved clip '{clip_name}' to {'folder ' + target_folder if target_folder else 'loose clips'}")
+    return new_path
 
 
 def write_project_json(project_root: str, data: dict) -> None:

@@ -1,0 +1,371 @@
+"""Node registry — tracks remote worker machines and dispatches jobs to them."""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class NodeSchedule:
+    """Active hours schedule for a node."""
+
+    enabled: bool = False
+    start: str = "00:00"  # HH:MM (24h)
+    end: str = "23:59"  # HH:MM (24h)
+
+    @property
+    def is_active_now(self) -> bool:
+        """Check if the current time is within the active window."""
+        if not self.enabled:
+            return True  # no schedule = always active
+
+        now = datetime.now().strftime("%H:%M")
+        if self.start <= self.end:
+            # Same-day window: e.g. 09:00-17:00
+            return self.start <= now <= self.end
+        else:
+            # Overnight window: e.g. 20:00-08:00
+            return now >= self.start or now <= self.end
+
+    def to_dict(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "start": self.start,
+            "end": self.end,
+            "is_active_now": self.is_active_now,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> NodeSchedule:
+        return cls(
+            enabled=d.get("enabled", False),
+            start=d.get("start", "00:00"),
+            end=d.get("end", "23:59"),
+        )
+
+
+@dataclass
+class GPUSlot:
+    """A single GPU on a node."""
+
+    index: int
+    name: str
+    vram_total_gb: float = 0.0
+    vram_free_gb: float = 0.0
+    status: str = "idle"  # idle, busy
+    current_job_id: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "index": self.index,
+            "name": self.name,
+            "vram_total_gb": round(self.vram_total_gb, 1),
+            "vram_free_gb": round(self.vram_free_gb, 1),
+            "status": self.status,
+            "current_job_id": self.current_job_id,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> GPUSlot:
+        return cls(
+            index=d.get("index", 0),
+            name=d.get("name", ""),
+            vram_total_gb=d.get("vram_total_gb", 0.0),
+            vram_free_gb=d.get("vram_free_gb", 0.0),
+            status=d.get("status", "idle"),
+            current_job_id=d.get("current_job_id"),
+        )
+
+
+@dataclass
+class NodeInfo:
+    """A registered remote worker node."""
+
+    node_id: str
+    name: str
+    host: str  # IP/hostname the node reported
+    gpus: list[GPUSlot] = field(default_factory=list)
+    # Legacy single-GPU fields (used when gpus list is empty)
+    gpu_name: str = ""
+    vram_total_gb: float = 0.0
+    vram_free_gb: float = 0.0
+    status: str = "online"  # online, busy, offline
+    current_job_id: str | None = None
+    last_heartbeat: float = field(default_factory=time.time)
+    capabilities: list[str] = field(default_factory=list)  # ["cuda", "mlx", "cpu"]
+    shared_storage: str | None = None  # path if node has shared storage mounted
+    org_id: str | None = None  # org this node belongs to (CRKY-53)
+    visibility: str = "private"  # "private" (org-only) or "shared" (all authenticated users)
+    paused: bool = False
+    schedule: NodeSchedule = field(default_factory=NodeSchedule)
+    # Empty list = accept all job types. Non-empty = only these types.
+    accepted_types: list[str] = field(default_factory=list)
+    agent_version: str = ""  # reported by node on registration
+    build_number: int = 0  # git commit timestamp — higher = newer
+    version_ok: bool = True  # set at registration — False if outdated
+    model_compiled: bool = False  # torch.compile succeeded — node runs ~30% faster
+    cpu_stats: dict = field(default_factory=dict)  # {cpu_percent, cpu_count, ram_*}
+    health_history: list[dict] = field(default_factory=list, repr=False)  # last N snapshots
+    recent_logs: list[str] = field(default_factory=list, repr=False)
+
+    def record_health(self, max_entries: int = 60) -> None:
+        """Record a health snapshot from current cpu_stats."""
+        if not self.cpu_stats:
+            return
+        entry = {
+            "ts": time.time(),
+            "cpu": self.cpu_stats.get("cpu_percent", 0),
+            "ram_used": self.cpu_stats.get("ram_used_gb", 0),
+            "ram_total": self.cpu_stats.get("ram_total_gb", 0),
+        }
+        self.health_history.append(entry)
+        if len(self.health_history) > max_entries:
+            self.health_history = self.health_history[-max_entries:]
+
+    def append_logs(self, lines: list[str], max_lines: int = 200) -> None:
+        self.recent_logs.extend(lines)
+        if len(self.recent_logs) > max_lines:
+            self.recent_logs = self.recent_logs[-max_lines:]
+
+    @property
+    def is_alive(self) -> bool:
+        return time.time() - self.last_heartbeat < 60  # 60s timeout (heartbeat every 10s)
+
+    @property
+    def can_accept_jobs(self) -> bool:
+        """True if the node is alive, not paused, and within its schedule."""
+        return self.is_alive and not self.paused and self.schedule.is_active_now
+
+    def accepts_job_type(self, job_type: str) -> bool:
+        """Check if this node accepts a specific job type."""
+        if not self.accepted_types:
+            return True  # empty = accept all
+        return job_type in self.accepted_types
+
+    @property
+    def gpu_count(self) -> int:
+        return len(self.gpus) if self.gpus else (1 if self.gpu_name else 0)
+
+    @property
+    def has_idle_gpu(self) -> bool:
+        if self.gpus:
+            return any(g.status == "idle" for g in self.gpus)
+        return self.status == "online"
+
+    def to_dict(self) -> dict:
+        return {
+            "node_id": self.node_id,
+            "name": self.name,
+            "host": self.host,
+            "gpus": [g.to_dict() for g in self.gpus],
+            "gpu_name": self.gpu_name,
+            "vram_total_gb": round(self.vram_total_gb, 1),
+            "vram_free_gb": round(self.vram_free_gb, 1),
+            "status": self.status if self.is_alive else "offline",
+            "current_job_id": self.current_job_id,
+            "last_heartbeat": self.last_heartbeat,
+            "capabilities": self.capabilities,
+            "shared_storage": self.shared_storage,
+            "org_id": self.org_id,
+            "visibility": self.visibility,
+            "paused": self.paused,
+            "schedule": self.schedule.to_dict(),
+            "accepted_types": self.accepted_types,
+            "cpu_stats": self.cpu_stats,
+            "agent_version": self.agent_version,
+            "build_number": self.build_number,
+            "version_ok": self.version_ok,
+            "model_compiled": self.model_compiled,
+        }
+
+    def to_storage_dict(self) -> dict:
+        """Serialize for Redis/storage. Raw status (not computed), includes all fields."""
+        return {
+            "node_id": self.node_id,
+            "name": self.name,
+            "host": self.host,
+            "gpus": [g.to_dict() for g in self.gpus],
+            "gpu_name": self.gpu_name,
+            "vram_total_gb": self.vram_total_gb,
+            "vram_free_gb": self.vram_free_gb,
+            "status": self.status,
+            "current_job_id": self.current_job_id,
+            "last_heartbeat": self.last_heartbeat,
+            "capabilities": self.capabilities,
+            "shared_storage": self.shared_storage,
+            "org_id": self.org_id,
+            "visibility": self.visibility,
+            "paused": self.paused,
+            "schedule": {"enabled": self.schedule.enabled, "start": self.schedule.start, "end": self.schedule.end},
+            "accepted_types": self.accepted_types,
+            "agent_version": self.agent_version,
+            "build_number": self.build_number,
+            "version_ok": self.version_ok,
+            "cpu_stats": self.cpu_stats,
+            "health_history": self.health_history,
+            "recent_logs": self.recent_logs,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> NodeInfo:
+        """Reconstruct a NodeInfo from a dict. Inverse of to_storage_dict()."""
+        gpus = [GPUSlot.from_dict(g) for g in d.get("gpus", [])]
+        sched = d.get("schedule", {})
+        return cls(
+            node_id=d["node_id"],
+            name=d["name"],
+            host=d.get("host", ""),
+            gpus=gpus,
+            gpu_name=d.get("gpu_name", ""),
+            vram_total_gb=d.get("vram_total_gb", 0.0),
+            vram_free_gb=d.get("vram_free_gb", 0.0),
+            status=d.get("status", "online"),
+            current_job_id=d.get("current_job_id"),
+            last_heartbeat=d.get("last_heartbeat", 0.0),
+            capabilities=d.get("capabilities", []),
+            shared_storage=d.get("shared_storage"),
+            org_id=d.get("org_id"),
+            visibility=d.get("visibility", "private"),
+            paused=d.get("paused", False),
+            schedule=NodeSchedule.from_dict(sched),
+            accepted_types=d.get("accepted_types", []),
+            agent_version=d.get("agent_version", ""),
+            build_number=d.get("build_number", 0),
+            version_ok=d.get("version_ok", True),
+            model_compiled=d.get("model_compiled", False),
+            cpu_stats=d.get("cpu_stats", {}),
+            health_history=d.get("health_history", []),
+            recent_logs=d.get("recent_logs", []),
+        )
+
+    def to_safe_dict(self) -> dict:
+        """Redacted version for WebSocket broadcasts to non-admin org members."""
+        return {
+            "node_id": self.node_id,
+            "name": self.name,
+            "host": "***",
+            "gpus": [g.to_dict() for g in self.gpus],
+            "gpu_name": self.gpu_name,
+            "vram_total_gb": round(self.vram_total_gb, 1),
+            "vram_free_gb": round(self.vram_free_gb, 1),
+            "status": self.status if self.is_alive else "offline",
+            "current_job_id": self.current_job_id,
+            "last_heartbeat": self.last_heartbeat,
+            "capabilities": [],
+            "shared_storage": None,
+            "org_id": self.org_id,
+            "visibility": self.visibility,
+            "paused": self.paused,
+            "schedule": self.schedule.to_dict(),
+            "accepted_types": [],
+            "cpu_stats": {},
+            "agent_version": self.agent_version,
+            "build_number": self.build_number,
+            "version_ok": self.version_ok,
+            "model_compiled": self.model_compiled,
+        }
+
+
+class NodeRegistry:
+    """Thread-safe registry of remote worker nodes."""
+
+    def __init__(self):
+        self._nodes: dict[str, NodeInfo] = {}
+        self._dismissed: set[str] = set()  # Node IDs explicitly removed via UI
+        self._lock = threading.Lock()
+
+    def is_dismissed(self, node_id: str) -> bool:
+        """Check if a node was explicitly removed via the UI."""
+        with self._lock:
+            return node_id in self._dismissed
+
+    def register(self, info: NodeInfo) -> None:
+        with self._lock:
+            # Clear dismissed status on explicit re-registration
+            self._dismissed.discard(info.node_id)
+            existing = self._nodes.get(info.node_id)
+            if existing:
+                existing.name = info.name
+                existing.host = info.host
+                existing.gpus = info.gpus
+                existing.gpu_name = info.gpu_name
+                existing.vram_total_gb = info.vram_total_gb
+                existing.vram_free_gb = info.vram_free_gb
+                existing.capabilities = info.capabilities
+                existing.shared_storage = info.shared_storage
+                # Always update org_id from the token (may change if re-registered with different token)
+                if info.org_id:
+                    existing.org_id = info.org_id
+                existing.agent_version = info.agent_version
+                existing.build_number = info.build_number
+                existing.status = "online"
+                existing.last_heartbeat = time.time()
+                # Preserve paused and schedule on re-register (set from UI)
+                logger.info(f"Node re-registered: {info.name} ({info.node_id})")
+            else:
+                info.last_heartbeat = time.time()
+                self._nodes[info.node_id] = info
+                gpu_desc = ", ".join(g.name for g in info.gpus) if info.gpus else info.gpu_name
+                logger.info(f"Node registered: {info.name} ({info.node_id}) — {gpu_desc}")
+
+    def heartbeat(self, node_id: str, vram_free_gb: float = 0.0, status: str = "online") -> bool:
+        """Update heartbeat. Returns False if node not found."""
+        with self._lock:
+            node = self._nodes.get(node_id)
+            if not node:
+                return False
+            node.last_heartbeat = time.time()
+            node.vram_free_gb = vram_free_gb
+            node.status = status
+            return True
+
+    def unregister(self, node_id: str, dismiss: bool = False) -> None:
+        with self._lock:
+            if node_id in self._nodes:
+                logger.info(f"Node unregistered: {self._nodes[node_id].name} ({node_id})")
+                del self._nodes[node_id]
+            if dismiss:
+                self._dismissed.add(node_id)
+                logger.info(f"Node dismissed (will not auto-reconnect): {node_id}")
+
+    def set_busy(self, node_id: str, job_id: str) -> None:
+        with self._lock:
+            node = self._nodes.get(node_id)
+            if node:
+                node.status = "busy"
+                node.current_job_id = job_id
+
+    def set_idle(self, node_id: str) -> None:
+        with self._lock:
+            node = self._nodes.get(node_id)
+            if node:
+                node.status = "online"
+                node.current_job_id = None
+
+    def get_available_node(self, min_vram_gb: float = 0.0) -> NodeInfo | None:
+        """Find an available node with enough VRAM."""
+        with self._lock:
+            for node in self._nodes.values():
+                if node.is_alive and node.status == "online":
+                    if min_vram_gb <= 0 or node.vram_free_gb >= min_vram_gb:
+                        return node
+            return None
+
+    def get_node(self, node_id: str) -> NodeInfo | None:
+        with self._lock:
+            return self._nodes.get(node_id)
+
+    def list_nodes(self) -> list[NodeInfo]:
+        with self._lock:
+            return list(self._nodes.values())
+
+    @property
+    def online_count(self) -> int:
+        with self._lock:
+            return sum(1 for n in self._nodes.values() if n.is_alive)
