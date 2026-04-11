@@ -29,6 +29,7 @@ _SITE_URL = os.environ.get("CK_SITE_URL", os.environ.get("SITE_URL", "https://co
 
 logger.info(f"SMTP Config: host={_SMTP_HOST}, port={_SMTP_PORT}, user={_SMTP_USER}, has_pass={bool(_SMTP_PASS)}")
 
+
 def is_smtp_configured() -> bool:
     return bool(_SMTP_HOST and _FROM_EMAIL)
 
@@ -52,7 +53,6 @@ def send_email(to: str, subject: str, html_body: str, text_body: str | None = No
         with smtplib.SMTP(_SMTP_HOST, _SMTP_PORT, timeout=20) as server:
             logger.info("MAIL:Sending EHLO")
             server.ehlo()
-            
             # Try STARTTLS on port 25 too (it's available)
             if _SMTP_PORT == 25 or _SMTP_PORT == 587:
                 logger.info("MAIL:Attempting STARTTLS")
@@ -62,13 +62,11 @@ def send_email(to: str, subject: str, html_body: str, text_body: str | None = No
                     logger.info("MAIL:STARTTLS successful")
                 except Exception as e:
                     logger.info(f"MAIL:STARTTLS not available or failed: {e}")
-            
             if _SMTP_USER and _SMTP_PASS:
                 logger.info(f"MAIL:Logging in as {_SMTP_USER}")
                 server.login(_SMTP_USER, _SMTP_PASS)
             else:
                 logger.info("MAIL:No credentials - relying on mynetworks")
-            
             logger.info(f"MAIL:Sending mail from {_FROM_EMAIL} to {to}")
             server.sendmail(_FROM_EMAIL, to, msg.as_string())
             logger.info("MAIL:SENDMAIL completed successfully")
